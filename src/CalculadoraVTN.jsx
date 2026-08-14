@@ -100,7 +100,10 @@ function calcularVTN({ modo, areaTotal, aptidao, areas, vtnRow, vtnHaAnterior, v
     const coeficiente = areaTotalNum > 0 ? truncate(areaTributavel / areaTotalNum, 4) : 0;
     const vtnTributavel = vtnTotal * coeficiente;
     const faixaAliquota = getAliquota(areaTotalNum);
-    const imposto = vtnTributavel * faixaAliquota.aliquota;
+    const impostoBruto = vtnTributavel * faixaAliquota.aliquota;
+    // Lei 9.393/96: o imposto devido nunca é zero — se o valor calculado for
+    // inferior a R$ 10,00, cobra-se o mínimo de R$ 10,00.
+    const imposto = (areaTotalNum > 0 && vtnPorHa > 0) ? Math.max(impostoBruto, 10) : impostoBruto;
 
     const anteriorNum = Number(vtnHaAnterior);
     const diferencaPct = anteriorNum > 0 ? (vtnPorHa / anteriorNum) * 100 - 100 : null;
@@ -111,7 +114,7 @@ function calcularVTN({ modo, areaTotal, aptidao, areas, vtnRow, vtnHaAnterior, v
 
     return {
       itens: [], somaAreas: 0, saldo: 0, vtnTotal, vtnPorHa, diferencaPct,
-      areaAmbiental: areaNaoTrib, areaTributavel, coeficiente, faixaAliquota, imposto,
+      areaAmbiental: areaNaoTrib, areaTributavel, coeficiente, faixaAliquota, imposto, impostoBruto,
       inconsistencias, areaTotalNum,
     };
   }
@@ -140,7 +143,10 @@ function calcularVTN({ modo, areaTotal, aptidao, areas, vtnRow, vtnHaAnterior, v
   const coeficiente = areaTotalNum > 0 ? truncate(areaTributavel / areaTotalNum, 4) : 0;
   const vtnTributavel = vtnTotal * coeficiente;
   const faixaAliquota = getAliquota(areaTotalNum);
-  const imposto = vtnTributavel * faixaAliquota.aliquota;
+  const impostoBruto = vtnTributavel * faixaAliquota.aliquota;
+  // Lei 9.393/96: o imposto devido nunca é zero — se o valor calculado for
+  // inferior a R$ 10,00, cobra-se o mínimo de R$ 10,00.
+  const imposto = (areaTotalNum > 0 && vtnPorHa > 0) ? Math.max(impostoBruto, 10) : impostoBruto;
 
   if (areaTotalNum <= 0) inconsistencias.push('Informe a área total do imóvel (maior que zero).');
   if (saldo > 0.05) inconsistencias.push(`Existem ${formatHA(saldo)} ainda não classificados.`);
@@ -149,7 +155,7 @@ function calcularVTN({ modo, areaTotal, aptidao, areas, vtnRow, vtnHaAnterior, v
 
   return {
     itens, somaAreas, saldo, vtnTotal, vtnPorHa, diferencaPct,
-    areaAmbiental, areaTributavel, coeficiente, faixaAliquota, imposto,
+    areaAmbiental, areaTributavel, coeficiente, faixaAliquota, imposto, impostoBruto,
     inconsistencias, areaTotalNum,
   };
 }
@@ -546,6 +552,7 @@ export default function CalculadoraVTN() {
       doc.setFont('Poppins', 'bold');
       doc.setFontSize(17);
       doc.text(temErro ? '—' : formatBRL(res.imposto), margem + 5, y + 27);
+      const aplicouMinimo = !temErro && res.impostoBruto < 10 && res.imposto === 10;
 
       const colX = [100, 135, 165];
       doc.setFont('Poppins', 'normal');
@@ -559,11 +566,15 @@ export default function CalculadoraVTN() {
       doc.text(temErro ? '—' : formatPct2(res.faixaAliquota.aliquota * 100), colX[1], y + 25);
       doc.text(temErro ? '—' : formatHA(res.areaTributavel), colX[2], y + 25);
 
-      if (im.municipio) {
+      const rodapeCaixa = [
+        im.municipio ? `${im.municipio}/${im.uf}` : null,
+        aplicouMinimo ? 'valor mínimo legal (Lei 9.393/96, Art. 11, §2º)' : null,
+      ].filter(Boolean).join(' · ');
+      if (rodapeCaixa) {
         doc.setFont('Poppins', 'normal');
         doc.setFontSize(7.5);
         doc.setTextColor(220, 230, 222);
-        doc.text(`${im.municipio}/${im.uf}`, margem + 5, y + 33);
+        doc.text(rodapeCaixa, margem + 5, y + 33);
       }
 
       y += boxH + 5;
@@ -1144,7 +1155,14 @@ export default function CalculadoraVTN() {
                     <p className="font-sans" style={{ color: C.ink }}>Coeficiente = TRUNC(Área Tributável ÷ Área Total, 4) = {resultado.coeficiente}</p>
                     <p className="font-sans" style={{ color: C.ink }}>VTN Tributável = VTN Total × Coeficiente = {formatBRL(resultado.vtnTotal * resultado.coeficiente)}</p>
                     <p className="font-sans" style={{ color: C.ink }}>Alíquota (GU&gt;80%, {resultado.faixaAliquota.label}) = {formatPct2(resultado.faixaAliquota.aliquota * 100)}</p>
-                    <p className="font-sans font-semibold" style={{ color: C.forestDark }}>Imposto (ITR) = VTN Tributável × Alíquota = {formatBRL(resultado.imposto)}</p>
+                    {resultado.impostoBruto < 10 && resultado.imposto === 10 ? (
+                      <>
+                        <p className="font-sans" style={{ color: C.ink }}>Imposto calculado = VTN Tributável × Alíquota = {formatBRL(resultado.impostoBruto)}</p>
+                        <p className="font-sans font-semibold" style={{ color: C.forestDark }}>Imposto mínimo (Lei 9.393/96, Art. 11, §2º) = {formatBRL(resultado.imposto)}</p>
+                      </>
+                    ) : (
+                      <p className="font-sans font-semibold" style={{ color: C.forestDark }}>Imposto (ITR) = VTN Tributável × Alíquota = {formatBRL(resultado.imposto)}</p>
+                    )}
                   </div>
                 </div>
               )}
@@ -1180,4 +1198,3 @@ export default function CalculadoraVTN() {
     </div>
   );
 }
-
