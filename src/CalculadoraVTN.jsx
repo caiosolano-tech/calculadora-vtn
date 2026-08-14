@@ -1,25 +1,29 @@
-import React, { useState, useMemo } from 'react';
-import { Sprout, MapPin, Calculator, AlertTriangle, TrendingUp, TrendingDown, Info, ClipboardCopy, ChevronDown, ChevronUp, Leaf, Table2, PenLine, FileDown, User } from 'lucide-react';
+import React, { useState, useMemo, useRef } from 'react';
+import {
+  Sprout, MapPin, Calculator, AlertTriangle, TrendingUp, TrendingDown, Info, ClipboardCopy,
+  ChevronDown, ChevronUp, Leaf, Table2, PenLine, FileDown, User, Plus, X, UploadCloud,
+  FileCheck2, Loader2, CheckCircle2,
+} from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import VTN_DATA_2026 from './vtn_2026.json';
+import { extractLinesFromPdf, parseDeclaracaoITR, mapCategoriasFromDeclaracao } from './parseDeclaracaoITR';
+import { LOGO_SAFRAS_CIFRAS_PNG_BASE64 } from './logoSafrasCifras';
 
 // =====================================================================
 // PALETA E TOKENS DE DESIGN
-// (Tailwind core apenas cuida de layout/spacing/tipografia; cores de
-// marca via inline style, já que classes arbitrárias não compilam aqui)
 // =====================================================================
 const C = {
-  bg: '#F6F4EE',           // fundo geral, bege-claro suave (papel/talhão)
+  bg: '#F6F4EE',
   paper: '#FFFFFF',
-  ink: '#1C2620',           // texto principal, verde-carvão
+  ink: '#1C2620',
   inkSoft: '#54614F',
-  forest: '#1F5C3F',        // verde principal (marca)
+  forest: '#1F5C3F',
   forestDark: '#153F2B',
   forestSoft: '#E7EFE7',
-  clay: '#B5652E',          // terracota/argila — acento de alerta/destaque secundário
+  clay: '#B5652E',
   claySoft: '#F6E9DD',
-  wheat: '#D8A93A',         // trigo — acento de aviso
+  wheat: '#D8A93A',
   wheatSoft: '#FBF1DA',
   line: '#DFDACD',
   danger: '#A3382C',
@@ -36,20 +40,18 @@ const CATEGORIAS = [
   { key: 'imprestavel', label: 'Imprestável / Não utilizada', usaAptidao: false },
 ];
 
-// Índice de cada categoria dentro da linha de dados da Receita Federal
-// [uf, municipio, lavouraBoa, lavouraRegular, lavouraRestrita, pastagemPlantada, silviculturaPastagemNatural, preservacao, fonte]
 function getVtnFieldIndex(catKey, aptidao) {
   switch (catKey) {
     case 'lavoura':
       if (aptidao === 'BOA') return 2;
       if (aptidao === 'REGULAR') return 3;
-      return 4; // RESTRITA
+      return 4;
     case 'pastagemPlantada': return 5;
     case 'pastagemNativa': return 6;
-    case 'reflorestamento': return 6; // mesma coluna da Receita ("Silvicultura ou Pastagem Natural")
+    case 'reflorestamento': return 6;
     case 'ambiental': return 7;
-    case 'benfeitorias': return 7; // confirmado: usa a taxa de Preservação, propositalmente
-    case 'imprestavel': return 7;  // confirmado: usa a taxa de Preservação, propositalmente
+    case 'benfeitorias': return 7;
+    case 'imprestavel': return 7;
     default: return null;
   }
 }
@@ -63,10 +65,8 @@ const NOME_CAMPO_VTN = {
   7: 'Preservação da Fauna e da Flora',
 };
 
-// Ordem/lista fixa para exibir o "quadro de pauta" com os 6 valores do município
 const CAMPOS_PAUTA = [2, 3, 4, 5, 6, 7];
 
-// Tabela oficial de alíquotas do ITR — Grau de Utilização acima de 80%
 const ALIQUOTA_FAIXAS = [
   { limite: 49.9, aliquota: 0.0003, label: 'até 50 ha' },
   { limite: 199.9, aliquota: 0.0007, label: '50,1 a 200 ha' },
@@ -85,12 +85,7 @@ function getAliquota(areaTotal) {
 }
 
 // =====================================================================
-// MOTOR DE CÁLCULO — função pura, sem estado de interface.
-// Suporta dois modos:
-//  - "automatico": reproduz fielmente a lógica da planilha "VTN 2025 v3"
-//    (decomposição por categoria, VTN unitário buscado na Receita Federal).
-//  - "manual": o VTN/ha é informado diretamente pelo operador; usado quando
-//    o valor de mercado já é conhecido e não se quer decompor por categoria.
+// MOTOR DE CÁLCULO — função pura
 // =====================================================================
 function calcularVTN({ modo, areaTotal, aptidao, areas, vtnRow, vtnHaAnterior, vtnManual, areaNaoTributavelManual }) {
   const areaTotalNum = Number(areaTotal) || 0;
@@ -120,22 +115,13 @@ function calcularVTN({ modo, areaTotal, aptidao, areas, vtnRow, vtnHaAnterior, v
     };
   }
 
-  // modo === 'automatico'
   const itens = CATEGORIAS.map((cat) => {
     const area = Number(areas[cat.key]) || 0;
     const idx = getVtnFieldIndex(cat.key, aptidao);
-    const vtnUnitario = vtnRow ? vtnRow[idx] : null; // null = s/informação na Receita
+    const vtnUnitario = vtnRow ? vtnRow[idx] : null;
     const indisponivel = area > 0 && (vtnUnitario === null || vtnUnitario === undefined);
     const vtnParcial = vtnUnitario != null ? area * vtnUnitario : 0;
-    return {
-      ...cat,
-      area,
-      idxCampo: idx,
-      nomeCampoVtn: NOME_CAMPO_VTN[idx],
-      vtnUnitario,
-      indisponivel,
-      vtnParcial,
-    };
+    return { ...cat, area, idxCampo: idx, nomeCampoVtn: NOME_CAMPO_VTN[idx], vtnUnitario, indisponivel, vtnParcial };
   });
 
   const somaAreas = round1(itens.reduce((s, i) => s + i.area, 0));
@@ -168,22 +154,27 @@ function calcularVTN({ modo, areaTotal, aptidao, areas, vtnRow, vtnHaAnterior, v
 }
 
 function round1(n) { return Math.round(n * 10) / 10; }
-function truncate(n, casas) {
-  const f = Math.pow(10, casas);
-  return Math.trunc(n * f) / f;
+function truncate(n, casas) { const f = Math.pow(10, casas); return Math.trunc(n * f) / f; }
+function formatHA(n) { return (n ?? 0).toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + ' ha'; }
+function formatBRL(n) { if (n == null || Number.isNaN(n)) return '—'; return n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }); }
+function formatPct1(n) { return (n ?? 0).toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + '%'; }
+function formatPct2(n) { return (n ?? 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + '%'; }
+
+function normalizaTexto(s) {
+  return (s || '').trim().toUpperCase();
 }
-function formatHA(n) {
-  return (n ?? 0).toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + ' ha';
-}
-function formatBRL(n) {
-  if (n == null || Number.isNaN(n)) return '—';
-  return n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
-}
-function formatPct1(n) {
-  return (n ?? 0).toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + '%';
-}
-function formatPct2(n) {
-  return (n ?? 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + '%';
+
+let contadorId = 0;
+function criarImovelVazio() {
+  contadorId += 1;
+  return {
+    id: `im_${Date.now()}_${contadorId}`,
+    nomeImovel: '', cib: '',
+    uf: '', municipio: '', aptidao: 'BOA', areaTotal: '', vtnHaAnterior: '',
+    areas: { lavoura: '', pastagemPlantada: '', pastagemNativa: '', reflorestamento: '', ambiental: '', benfeitorias: '', imprestavel: '' },
+    modo: 'automatico', vtnManual: '', areaNaoTributavelManual: '',
+    importado: null,
+  };
 }
 
 // =====================================================================
@@ -195,51 +186,164 @@ export default function CalculadoraVTN() {
     return Array.from(s).sort();
   }, []);
 
-  const [nomeImovel, setNomeImovel] = useState('');
-  const [cib, setCib] = useState('');
-  const [uf, setUf] = useState('');
-  const [municipio, setMunicipio] = useState('');
-  const [aptidao, setAptidao] = useState('BOA');
-  const [areaTotal, setAreaTotal] = useState('');
-  const [vtnHaAnterior, setVtnHaAnterior] = useState('');
-  const [areas, setAreas] = useState({
-    lavoura: '', pastagemPlantada: '', pastagemNativa: '',
-    reflorestamento: '', ambiental: '', benfeitorias: '', imprestavel: '',
-  });
-  const [modo, setModo] = useState('automatico'); // 'automatico' | 'manual'
-  const [vtnManual, setVtnManual] = useState('');
-  const [areaNaoTributavelManual, setAreaNaoTributavelManual] = useState('');
+  const [imoveis, setImoveis] = useState(() => [criarImovelVazio()]);
+  const [activeId, setActiveId] = useState(() => imoveis[0].id);
   const [memoriaAberta, setMemoriaAberta] = useState(true);
   const [copiado, setCopiado] = useState(false);
   const [tentouGerar, setTentouGerar] = useState(false);
+  const [importando, setImportando] = useState(false);
+  const [previewImportacao, setPreviewImportacao] = useState(null);
+  const fileInputRef = useRef(null);
+
+  const activeIndex = Math.max(0, imoveis.findIndex((im) => im.id === activeId));
+  const imovel = imoveis[activeIndex] || imoveis[0];
+
+  function updateActiveImovel(patch) {
+    setImoveis((prev) => prev.map((im) => (im.id === activeId ? { ...im, ...patch } : im)));
+    setTentouGerar(false);
+  }
+  function updateActiveAreas(key, value) {
+    setImoveis((prev) => prev.map((im) => (im.id === activeId ? { ...im, areas: { ...im.areas, [key]: value } } : im)));
+  }
+
+  function handleNovoImovel() {
+    const novo = criarImovelVazio();
+    setImoveis((prev) => [...prev, novo]);
+    setActiveId(novo.id);
+    setTentouGerar(false);
+  }
+
+  function handleRemoverImovel(id, ev) {
+    ev.stopPropagation();
+    setImoveis((prev) => {
+      const resto = prev.filter((im) => im.id !== id);
+      if (resto.length === 0) {
+        const novo = criarImovelVazio();
+        setActiveId(novo.id);
+        return [novo];
+      }
+      if (id === activeId) setActiveId(resto[0].id);
+      return resto;
+    });
+  }
 
   const municipios = useMemo(() => {
-    if (!uf) return [];
-    return VTN_DATA_2026.filter((r) => r[0] === uf)
-      .map((r) => r[1])
-      .sort((a, b) => a.localeCompare(b, 'pt-BR'));
-  }, [uf]);
+    if (!imovel.uf) return [];
+    return VTN_DATA_2026.filter((r) => r[0] === imovel.uf).map((r) => r[1]).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  }, [imovel.uf]);
 
   const vtnRow = useMemo(() => {
-    if (!uf || !municipio) return null;
-    return VTN_DATA_2026.find((r) => r[0] === uf && r[1] === municipio) || null;
-  }, [uf, municipio]);
+    if (!imovel.uf || !imovel.municipio) return null;
+    return VTN_DATA_2026.find((r) => r[0] === imovel.uf && r[1] === imovel.municipio) || null;
+  }, [imovel.uf, imovel.municipio]);
 
   const resultado = useMemo(() => calcularVTN({
-    modo, areaTotal, aptidao, areas, vtnRow, vtnHaAnterior, vtnManual, areaNaoTributavelManual,
-  }), [modo, areaTotal, aptidao, areas, vtnRow, vtnHaAnterior, vtnManual, areaNaoTributavelManual]);
+    modo: imovel.modo, areaTotal: imovel.areaTotal, aptidao: imovel.aptidao, areas: imovel.areas,
+    vtnRow, vtnHaAnterior: imovel.vtnHaAnterior, vtnManual: imovel.vtnManual,
+    areaNaoTributavelManual: imovel.areaNaoTributavelManual,
+  }), [imovel, vtnRow]);
 
-  function handleAreaChange(key, value) {
-    setAreas((prev) => ({ ...prev, [key]: value }));
+  const bloqueado = resultado.inconsistencias.some((m) => m.startsWith('Erro'));
+  const identificacaoFaltando = tentouGerar && (!imovel.nomeImovel.trim() || !imovel.cib.trim());
+
+  async function handleArquivosSelecionados(e) {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
+    setImportando(true);
+    const resultados = [];
+    for (const file of files) {
+      try {
+        const buf = await file.arrayBuffer();
+        const lines = await extractLinesFromPdf(buf);
+        const parsed = parseDeclaracaoITR(lines);
+        if (!parsed.cib && !parsed.nomeImovel) {
+          resultados.push({ arquivo: file.name, erro: 'Não foi possível reconhecer este arquivo como uma declaração de ITR (DIAT/DIAC).' });
+          continue;
+        }
+        const categorias = mapCategoriasFromDeclaracao(parsed);
+        const municipioEncontrado = VTN_DATA_2026.find(
+          (r) => r[0] === normalizaTexto(parsed.uf) && r[1] === normalizaTexto(parsed.municipio)
+        );
+        resultados.push({ arquivo: file.name, parsed, categorias, municipioEncontrado: !!municipioEncontrado, incluir: true });
+      } catch (err) {
+        resultados.push({ arquivo: file.name, erro: 'Falha ao ler o PDF (arquivo corrompido ou em formato não suportado).' });
+      }
+    }
+    setPreviewImportacao(resultados);
+    setImportando(false);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  }
+
+  function alternarInclusaoPreview(idx) {
+    setPreviewImportacao((prev) => prev.map((r, i) => (i === idx ? { ...r, incluir: !r.incluir } : r)));
+  }
+
+  function handleConfirmarImportacao() {
+    const validos = previewImportacao.filter((r) => !r.erro && r.incluir);
+    setImoveis((prev) => {
+      let novaLista = [...prev];
+      const soExisteVazio = prev.length === 1 && !prev[0].nomeImovel && !prev[0].cib && !prev[0].areaTotal;
+      if (soExisteVazio) novaLista = [];
+
+      let primeiroNovoId = null;
+      for (const r of validos) {
+        const { parsed, categorias } = r;
+        const cibNormalizado = parsed.cib;
+        const existenteIdx = novaLista.findIndex((im) => im.cib && cibNormalizado && im.cib === cibNormalizado);
+        const municipioEncontrado = VTN_DATA_2026.find(
+          (row) => row[0] === normalizaTexto(parsed.uf) && row[1] === normalizaTexto(parsed.municipio)
+        );
+        const novoImovel = {
+          ...criarImovelVazio(),
+          nomeImovel: parsed.nomeImovel || '',
+          cib: parsed.cib || '',
+          uf: municipioEncontrado ? municipioEncontrado[0] : '',
+          municipio: municipioEncontrado ? municipioEncontrado[1] : '',
+          areaTotal: parsed.areaTotalImovel != null ? String(parsed.areaTotalImovel) : '',
+          areas: {
+            lavoura: String(round1(categorias.lavoura)),
+            pastagemPlantada: String(round1(categorias.pastagemPlantada)),
+            pastagemNativa: String(round1(categorias.pastagemNativa)),
+            reflorestamento: String(round1(categorias.reflorestamento)),
+            ambiental: String(round1(categorias.ambiental)),
+            benfeitorias: String(round1(categorias.benfeitorias)),
+            imprestavel: String(round1(categorias.imprestavel)),
+          },
+          importado: {
+            arquivoNome: r.arquivo,
+            exercicioDeclaracao: parsed.exercicio,
+            naoClassificado: round1(categorias.naoClassificado),
+            pastagemIndefinida: categorias.pastagemIndefinida,
+            pastagemTotalDeclarada: categorias.pastagemTotalDeclarada,
+            declarado: parsed.declarado,
+            municipioNaoEncontrado: !municipioEncontrado,
+          },
+        };
+        if (existenteIdx > -1) {
+          novaLista[existenteIdx] = { ...novoImovel, id: novaLista[existenteIdx].id };
+          if (!primeiroNovoId) primeiroNovoId = novaLista[existenteIdx].id;
+        } else {
+          novaLista.push(novoImovel);
+          if (!primeiroNovoId) primeiroNovoId = novoImovel.id;
+        }
+      }
+      if (primeiroNovoId) setActiveId(primeiroNovoId);
+      return novaLista;
+    });
+    setPreviewImportacao(null);
+  }
+
+  function handleCancelarImportacao() {
+    setPreviewImportacao(null);
   }
 
   function handleCopiar() {
-    const linhas = modo === 'automatico'
+    const linhas = imovel.modo === 'automatico'
       ? resultado.itens.filter((i) => i.area > 0)
         .map((i) => `${i.label}: ${formatHA(i.area)} × ${i.vtnUnitario != null ? formatBRL(i.vtnUnitario) : 'indisponível'}/ha = ${formatBRL(i.vtnParcial)}`)
       : [`VTN informado manualmente: ${formatBRL(resultado.vtnPorHa)}/ha`];
     const texto = [
-      `Calculadora de VTN — ${municipio || '(município)'}/${uf || '--'} — Exercício 2026`,
+      `Calculadora de VTN — ${imovel.municipio || '(município)'}/${imovel.uf || '--'} — Exercício 2026`,
       `Área total: ${formatHA(resultado.areaTotalNum)}`,
       ...linhas,
       `VTN Total: ${formatBRL(resultado.vtnTotal)}`,
@@ -253,100 +357,104 @@ export default function CalculadoraVTN() {
     setTimeout(() => setCopiado(false), 2000);
   }
 
-  const bloqueado = resultado.inconsistencias.some((m) => m.startsWith('Erro'));
-  const identificacaoFaltando = tentouGerar && (!nomeImovel.trim() || !cib.trim());
-
   function handleGerarRelatorio() {
-    if (!nomeImovel.trim() || !cib.trim()) {
+    if (!imovel.nomeImovel.trim() || !imovel.cib.trim()) {
       setTentouGerar(true);
       return;
     }
-    const doc = new jsPDF({ unit: 'mm', format: 'a4' });
-    const corForest = [21, 63, 43];
-    const corInkSoft = [90, 100, 85];
-    const corLinha = [223, 218, 205];
-    const margem = 14;
-    let y = 16;
 
-    // Cabeçalho
+    const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+    const pageW = 210;
+    const margem = 14;
+
+    doc.setFillColor(21, 63, 43);
+    doc.rect(0, 0, pageW, 24, 'F');
+    doc.setTextColor(255, 255, 255);
     doc.setFont('helvetica', 'bold');
-    doc.setFontSize(8);
-    doc.setTextColor(...corForest);
-    doc.text('GESTÃO FUNDIÁRIA · SAFRAS & CIFRAS', margem, y);
-    doc.setFontSize(16);
-    y += 7;
-    doc.text('Relatório de VTN e ITR', margem, y);
+    doc.setFontSize(15);
+    doc.text('Gestão Fundiária', margem, 15);
+    try {
+      doc.addImage(LOGO_SAFRAS_CIFRAS_PNG_BASE64, 'PNG', pageW - margem - 16, 4, 16, 16 * (283 / 300));
+    } catch (e) { /* segue sem logo se falhar */ }
+
+    let y = 34;
+    doc.setTextColor(0, 0, 0);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(17);
+    doc.text(imovel.nomeImovel, margem, y);
+    y += 6;
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(9);
-    doc.setTextColor(...corInkSoft);
-    const dataGeracao = new Date().toLocaleDateString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric' });
-    doc.text(`Gerado em ${dataGeracao} · Exercício 2026`, margem, y + 5);
+    doc.setTextColor(90, 100, 85);
+    const dataGeracao = new Date().toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+    doc.text(`Data de geração: ${dataGeracao} · Exercício 2026`, margem, y);
 
-    doc.setDrawColor(...corLinha);
-    y += 9;
-    doc.line(margem, y, 196, y);
-    y += 7;
+    doc.setDrawColor(31, 92, 63);
+    doc.setLineWidth(0.6);
+    y += 4;
+    doc.line(margem, y, pageW - margem, y);
+    y += 8;
 
-    // Identificação
     doc.setFont('helvetica', 'bold');
-    doc.setFontSize(10);
+    doc.setFontSize(12);
     doc.setTextColor(0, 0, 0);
-    doc.text('Identificação', margem, y);
-    y += 5;
+    doc.text('Quadro de Informações', margem, y);
+    y += 6;
+
+    const sectionHeader = (titulo, yPos) => {
+      doc.setFillColor(231, 239, 231);
+      doc.rect(margem, yPos, pageW - margem * 2, 7, 'F');
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(10);
+      doc.setTextColor(21, 63, 43);
+      doc.text(titulo, margem + 3, yPos + 5);
+      return yPos + 7;
+    };
+
+    y = sectionHeader('Identificação', y);
     autoTable(doc, {
       startY: y,
       theme: 'plain',
       margin: { left: margem, right: margem },
-      styles: { fontSize: 9, cellPadding: 1.2 },
-      columnStyles: { 0: { fontStyle: 'bold', cellWidth: 40 } },
+      styles: { fontSize: 9, cellPadding: 1.4 },
+      alternateRowStyles: { fillColor: [246, 249, 246] },
+      columnStyles: { 0: { fontStyle: 'bold', cellWidth: 45 } },
       body: [
-        ['Imóvel', nomeImovel || '—'],
-        ['CIB', cib || '—'],
-        ['Município / UF', municipio ? `${municipio} / ${uf}` : '—'],
-        ['Modo de cálculo', modo === 'automatico' ? 'Composição por categoria de área' : 'VTN informado manualmente'],
+        ['CIB', imovel.cib],
+        ['Município / UF', imovel.municipio ? `${imovel.municipio} / ${imovel.uf}` : '—'],
+        ['Modo de cálculo', imovel.modo === 'automatico' ? 'Composição por categoria de área' : 'VTN informado manualmente'],
+        ...(imovel.importado ? [['Origem dos dados', `Importado de ${imovel.importado.arquivoNome} (declaração ${imovel.importado.exercicioDeclaracao || '—'})`]] : []),
       ],
     });
     y = doc.lastAutoTable.finalY + 6;
 
-    // Valores de pauta (se município selecionado)
     if (vtnRow) {
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(10);
-      doc.text(`Valores de pauta — ${municipio}/${uf} (Receita Federal, Exercício 2026)`, margem, y);
-      y += 4;
+      y = sectionHeader(`Valores de pauta — ${imovel.municipio}/${imovel.uf} (Receita Federal, Exercício 2026)`, y);
       autoTable(doc, {
         startY: y,
         theme: 'grid',
         margin: { left: margem, right: margem },
-        headStyles: { fillColor: corForest, fontSize: 8 },
+        headStyles: { fillColor: [21, 63, 43], fontSize: 7.5 },
         styles: { fontSize: 8, cellPadding: 1.6 },
         head: [CAMPOS_PAUTA.map((idx) => NOME_CAMPO_VTN[idx])],
-        body: [CAMPOS_PAUTA.map((idx) => vtnRow[idx] != null ? formatBRL(vtnRow[idx]) : 'indisponível')],
+        body: [CAMPOS_PAUTA.map((idx) => (vtnRow[idx] != null ? formatBRL(vtnRow[idx]) : 'indisponível'))],
       });
       y = doc.lastAutoTable.finalY + 6;
     }
 
-    // Composição da área (modo automático) ou VTN manual
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(10);
-    doc.text(modo === 'automatico' ? 'Composição da área' : 'VTN informado', margem, y);
-    y += 4;
-
-    if (modo === 'automatico') {
-      const linhas = resultado.itens
-        .filter((i) => i.area > 0)
-        .map((i) => [
-          i.label,
-          formatHA(i.area),
-          formatPct1(resultado.areaTotalNum > 0 ? (i.area / resultado.areaTotalNum) * 100 : 0),
-          i.vtnUnitario != null ? formatBRL(i.vtnUnitario) + '/ha' : 'indisponível',
-          formatBRL(i.vtnParcial),
-        ]);
+    y = sectionHeader(imovel.modo === 'automatico' ? 'Composição da Área' : 'VTN Informado', y);
+    if (imovel.modo === 'automatico') {
+      const linhas = resultado.itens.filter((i) => i.area > 0).map((i) => [
+        i.label, formatHA(i.area),
+        formatPct1(resultado.areaTotalNum > 0 ? (i.area / resultado.areaTotalNum) * 100 : 0),
+        i.vtnUnitario != null ? formatBRL(i.vtnUnitario) + '/ha' : 'indisponível',
+        formatBRL(i.vtnParcial),
+      ]);
       autoTable(doc, {
         startY: y,
         theme: 'grid',
         margin: { left: margem, right: margem },
-        headStyles: { fillColor: corForest, fontSize: 8 },
+        headStyles: { fillColor: [21, 63, 43], fontSize: 8 },
         styles: { fontSize: 8, cellPadding: 1.6 },
         head: [['Categoria', 'Área', '%', 'VTN unitário', 'VTN parcial']],
         body: linhas.length ? linhas : [['—', '—', '—', '—', '—']],
@@ -359,7 +467,8 @@ export default function CalculadoraVTN() {
         theme: 'plain',
         margin: { left: margem, right: margem },
         styles: { fontSize: 9, cellPadding: 1.2 },
-        columnStyles: { 0: { fontStyle: 'bold', cellWidth: 50 } },
+        alternateRowStyles: { fillColor: [246, 249, 246] },
+        columnStyles: { 0: { fontStyle: 'bold', cellWidth: 60 } },
         body: [
           ['VTN por hectare informado', formatBRL(resultado.vtnPorHa)],
           ['Área não tributável (APP, Reserva, etc.)', formatHA(resultado.areaAmbiental)],
@@ -368,9 +477,10 @@ export default function CalculadoraVTN() {
     }
     y = doc.lastAutoTable.finalY + 8;
 
-    // Resultado final (destaque)
-    doc.setFillColor(...corForest);
-    doc.roundedRect(margem, y, 182, 30, 2, 2, 'F');
+    if (y > 230) { doc.addPage(); y = 20; }
+
+    doc.setFillColor(21, 63, 43);
+    doc.roundedRect(margem, y, pageW - margem * 2, 30, 2, 2, 'F');
     doc.setTextColor(255, 255, 255);
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(8);
@@ -381,7 +491,7 @@ export default function CalculadoraVTN() {
 
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(8);
-    const colX = [95, 125, 155];
+    const colX = [95, 130, 160];
     doc.text('VTN Ponderado', colX[0], y + 7);
     doc.text('VTN Total', colX[1], y + 7);
     doc.text('Alíquota', colX[2], y + 7);
@@ -403,18 +513,17 @@ export default function CalculadoraVTN() {
     doc.setFontSize(8);
     doc.text(resultado.faixaAliquota.label, colX[2], y + 27);
 
-    y += 38;
+    const totalPaginas = doc.internal.getNumberOfPages();
+    for (let p = 1; p <= totalPaginas; p++) {
+      doc.setPage(p);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(8);
+      doc.setTextColor(120, 130, 115);
+      doc.text('Gestão Fundiária', margem, 289);
+      doc.text(`Página ${p} de ${totalPaginas}`, pageW - margem, 289, { align: 'right' });
+    }
 
-    // Rodapé
-    doc.setTextColor(...corInkSoft);
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(7.5);
-    doc.text(
-      'Fonte dos valores de VTN: Receita Federal, Tabela de Valores de Terra Nua, Exercício 2026. Simulação considera Grau de Utilização acima de 80%, conforme metodologia interna.',
-      margem, y, { maxWidth: 182 }
-    );
-
-    const nomeArquivo = `Relatorio_VTN_${(nomeImovel || municipio || 'imovel').replace(/\s+/g, '_')}.pdf`;
+    const nomeArquivo = `Relatorio_VTN_${imovel.nomeImovel.replace(/\s+/g, '_')}.pdf`;
     doc.save(nomeArquivo);
   }
 
@@ -426,13 +535,9 @@ export default function CalculadoraVTN() {
         .vtn-mono { font-variant-numeric: tabular-nums; }
         .vtn-app input[type=number] { -moz-appearance: textfield; }
         .vtn-app input[type=number]::-webkit-outer-spin-button,
-        .vtn-app input[type=number]::-webkit-inner-spin-button {
-          -webkit-appearance: none;
-          margin: 0;
-        }
+        .vtn-app input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
       `}</style>
 
-      {/* Cabeçalho */}
       <header className="border-b" style={{ borderColor: C.line }}>
         <div className="max-w-6xl mx-auto px-6 py-6 flex items-center gap-3">
           <div className="w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: C.forest }}>
@@ -445,11 +550,129 @@ export default function CalculadoraVTN() {
         </div>
       </header>
 
-      <main className="max-w-6xl mx-auto px-6 py-8 grid grid-cols-1 lg:grid-cols-5 gap-6">
-        {/* ============ COLUNA ESQUERDA: FORMULÁRIO ============ */}
+      <div className="max-w-6xl mx-auto px-6 pt-6">
+        <div className="rounded-2xl p-4 shadow-sm mb-6" style={{ background: C.paper, border: `1px solid ${C.line}` }}>
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: C.inkSoft }}>Imóveis nesta sessão ({imoveis.length})</p>
+            <label className="flex items-center gap-1.5 text-xs font-semibold cursor-pointer" style={{ color: C.forest }}>
+              <UploadCloud size={14} />
+              Importar declarações de ITR (PDF)
+              <input ref={fileInputRef} type="file" accept="application/pdf" multiple className="hidden" onChange={handleArquivosSelecionados} />
+            </label>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {imoveis.map((im) => (
+              <button
+                key={im.id}
+                type="button"
+                onClick={() => setActiveId(im.id)}
+                className="group flex items-center gap-2 rounded-xl px-3 py-2 text-xs font-semibold transition-colors"
+                style={im.id === activeId ? { background: C.forest, color: '#fff' } : { background: C.bg, color: C.inkSoft, border: `1px solid ${C.line}` }}
+              >
+                <span className="max-w-[140px] truncate">{im.nomeImovel || 'Sem nome'}</span>
+                <span className="opacity-70">{im.cib || 'sem CIB'}</span>
+                {imoveis.length > 1 && (
+                  <X size={13} className="opacity-60 hover:opacity-100" onClick={(ev) => handleRemoverImovel(im.id, ev)} />
+                )}
+              </button>
+            ))}
+            <button
+              type="button" onClick={handleNovoImovel}
+              className="flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold"
+              style={{ background: '#fff', color: C.forest, border: `1px dashed ${C.forest}` }}
+            >
+              <Plus size={14} /> Novo imóvel
+            </button>
+          </div>
+          {importando && (
+            <div className="mt-3 flex items-center gap-2 text-xs" style={{ color: C.inkSoft }}>
+              <Loader2 size={14} className="animate-spin" /> Lendo declarações…
+            </div>
+          )}
+        </div>
+
+        {previewImportacao && (
+          <div className="rounded-2xl p-5 shadow-sm mb-6" style={{ background: C.paper, border: `2px solid ${C.forest}` }}>
+            <div className="flex items-center gap-2 mb-3">
+              <FileCheck2 size={18} color={C.forest} />
+              <h2 className="font-semibold text-base">Prévia da importação — confirme antes de aplicar</h2>
+            </div>
+            <div className="space-y-3">
+              {previewImportacao.map((r, idx) => (
+                <div key={idx} className="rounded-xl p-3" style={{ background: r.erro ? C.dangerSoft : C.forestSoft, border: `1px solid ${r.erro ? C.danger : C.forest}` }}>
+                  {r.erro ? (
+                    <div className="flex items-start gap-2 text-sm" style={{ color: C.danger }}>
+                      <AlertTriangle size={16} className="flex-shrink-0 mt-0.5" />
+                      <div><strong>{r.arquivo}</strong><br />{r.erro}</div>
+                    </div>
+                  ) : (
+                    <div>
+                      <label className="flex items-start gap-2 cursor-pointer">
+                        <input type="checkbox" checked={r.incluir} onChange={() => alternarInclusaoPreview(idx)} className="mt-1" />
+                        <div className="flex-1 text-sm">
+                          <p className="font-semibold" style={{ color: C.forestDark }}>
+                            {r.parsed.nomeImovel || '(sem nome)'} <span className="font-normal opacity-70">· CIB {r.parsed.cib || '—'}</span>
+                          </p>
+                          <p className="text-xs mt-0.5" style={{ color: C.inkSoft }}>
+                            {r.parsed.municipio}/{r.parsed.uf} · Área total: {formatHA(r.categorias.areaTotalDeclarada)} · Declaração {r.parsed.exercicio || '—'}
+                          </p>
+                          <div className="flex flex-wrap gap-x-4 gap-y-0.5 mt-1.5 text-xs" style={{ color: C.inkSoft }}>
+                            <span>Lavoura: {formatHA(r.categorias.lavoura)}</span>
+                            <span>Pastagem Nativa: {formatHA(r.categorias.pastagemNativa)}</span>
+                            <span>Pastagem Plantada: {formatHA(r.categorias.pastagemPlantada)}</span>
+                            <span>Reflorestamento: {formatHA(r.categorias.reflorestamento)}</span>
+                            <span>Ambiental: {formatHA(r.categorias.ambiental)}</span>
+                            <span>Benfeitorias: {formatHA(r.categorias.benfeitorias)}</span>
+                            <span>Imprestável: {formatHA(r.categorias.imprestavel)}</span>
+                          </div>
+                          {!r.municipioEncontrado && (
+                            <p className="text-xs mt-1.5 flex items-center gap-1" style={{ color: C.danger }}>
+                              <AlertTriangle size={12} /> Município "{r.parsed.municipio}/{r.parsed.uf}" não encontrado na tabela de VTN 2026 — selecione manualmente depois de importar.
+                            </p>
+                          )}
+                          {r.categorias.pastagemIndefinida && (
+                            <p className="text-xs mt-1 flex items-center gap-1" style={{ color: '#7A5A18' }}>
+                              <AlertTriangle size={12} /> Declaração não detalha pastagem nativa/plantada (total: {formatHA(r.categorias.pastagemTotalDeclarada)}) — divida manualmente depois de importar.
+                            </p>
+                          )}
+                          {r.categorias.naoClassificado > 0 && (
+                            <p className="text-xs mt-1 flex items-center gap-1" style={{ color: '#7A5A18' }}>
+                              <AlertTriangle size={12} /> {formatHA(r.categorias.naoClassificado)} da declaração (área em descanso, exploração extrativa, etc.) não têm categoria correspondente e não foram somados a nenhuma — verifique o saldo depois de importar.
+                            </p>
+                          )}
+                        </div>
+                      </label>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+            <div className="flex gap-2 mt-4">
+              <button type="button" onClick={handleCancelarImportacao}
+                className="px-4 py-2 rounded-lg text-sm font-semibold" style={{ background: '#fff', color: C.inkSoft, border: `1px solid ${C.line}` }}>
+                Cancelar
+              </button>
+              <button type="button" onClick={handleConfirmarImportacao}
+                disabled={!previewImportacao.some((r) => !r.erro && r.incluir)}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold disabled:opacity-50" style={{ background: C.forest, color: '#fff' }}>
+                <CheckCircle2 size={15} />
+                Confirmar importação ({previewImportacao.filter((r) => !r.erro && r.incluir).length} imóve{previewImportacao.filter((r) => !r.erro && r.incluir).length === 1 ? 'l' : 'is'})
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <main className="max-w-6xl mx-auto px-6 pb-8 grid grid-cols-1 lg:grid-cols-5 gap-6">
         <section className="lg:col-span-3 space-y-6">
 
-          {/* Localização */}
+          {imovel.importado && (
+            <div className="rounded-2xl p-4 text-sm flex items-start gap-2" style={{ background: C.forestSoft, border: `1px solid ${C.forest}`, color: C.forestDark }}>
+              <FileCheck2 size={16} className="flex-shrink-0 mt-0.5" />
+              <span>Áreas importadas de <strong>{imovel.importado.arquivoNome}</strong> (declaração {imovel.importado.exercicioDeclaracao || '—'}). Confira e ajuste os campos abaixo se necessário.</span>
+            </div>
+          )}
+
           <div className="rounded-2xl p-5 shadow-sm" style={{ background: C.paper, border: `1px solid ${C.line}` }}>
             <div className="flex items-center gap-2 mb-4">
               <MapPin size={18} color={C.forest} />
@@ -461,8 +684,8 @@ export default function CalculadoraVTN() {
                 <select
                   className="w-full rounded-lg px-3 py-2 text-sm outline-none"
                   style={{ border: `1px solid ${C.line}`, background: '#fff' }}
-                  value={uf}
-                  onChange={(e) => { setUf(e.target.value); setMunicipio(''); }}
+                  value={imovel.uf}
+                  onChange={(e) => updateActiveImovel({ uf: e.target.value, municipio: '' })}
                 >
                   <option value="">Selecione…</option>
                   {ufs.map((u) => <option key={u} value={u}>{u}</option>)}
@@ -473,11 +696,11 @@ export default function CalculadoraVTN() {
                 <select
                   className="w-full rounded-lg px-3 py-2 text-sm outline-none disabled:opacity-50"
                   style={{ border: `1px solid ${C.line}`, background: '#fff' }}
-                  value={municipio}
-                  disabled={!uf}
-                  onChange={(e) => setMunicipio(e.target.value)}
+                  value={imovel.municipio}
+                  disabled={!imovel.uf}
+                  onChange={(e) => updateActiveImovel({ municipio: e.target.value })}
                 >
-                  <option value="">{uf ? 'Selecione…' : 'Escolha o Estado primeiro'}</option>
+                  <option value="">{imovel.uf ? 'Selecione…' : 'Escolha o Estado primeiro'}</option>
                   {municipios.map((m) => <option key={m} value={m}>{m}</option>)}
                 </select>
               </div>
@@ -488,7 +711,7 @@ export default function CalculadoraVTN() {
               <span className="text-sm font-semibold" style={{ color: C.forestDark }}>2026 (Receita Federal)</span>
             </div>
 
-            {uf && municipio && !vtnRow && (
+            {imovel.uf && imovel.municipio && !vtnRow && (
               <div className="mt-3 flex items-start gap-2 text-sm rounded-lg px-3 py-2" style={{ background: C.dangerSoft, color: C.danger }}>
                 <AlertTriangle size={16} className="flex-shrink-0 mt-0.5" />
                 <span>Não há registro de VTN para este município no exercício 2026. Não é possível calcular.</span>
@@ -496,13 +719,12 @@ export default function CalculadoraVTN() {
             )}
           </div>
 
-          {/* Quadro de valores de pauta do município selecionado */}
           {vtnRow && (
             <div className="rounded-2xl p-5 shadow-sm" style={{ background: C.forestSoft, border: `1px solid ${C.forest}` }}>
               <div className="flex items-center gap-2 mb-3">
                 <Table2 size={18} color={C.forestDark} />
                 <h2 className="font-semibold text-base" style={{ color: C.forestDark }}>
-                  Valores de pauta — {municipio}/{uf}
+                  Valores de pauta — {imovel.municipio}/{imovel.uf}
                 </h2>
               </div>
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
@@ -525,7 +747,6 @@ export default function CalculadoraVTN() {
             </div>
           )}
 
-          {/* Área total, aptidão e escolha do modo de cálculo */}
           <div className="rounded-2xl p-5 shadow-sm" style={{ background: C.paper, border: `1px solid ${C.line}` }}>
             <div className="flex items-center gap-2 mb-4">
               <Leaf size={18} color={C.forest} />
@@ -540,8 +761,8 @@ export default function CalculadoraVTN() {
                   className="w-full rounded-lg px-3 py-2 text-sm outline-none vtn-mono"
                   style={{ border: `1px solid ${C.line}` }}
                   placeholder="0,0"
-                  value={areaTotal}
-                  onChange={(e) => setAreaTotal(e.target.value)}
+                  value={imovel.areaTotal}
+                  onChange={(e) => updateActiveImovel({ areaTotal: e.target.value })}
                 />
               </div>
               <div>
@@ -551,31 +772,26 @@ export default function CalculadoraVTN() {
                   className="w-full rounded-lg px-3 py-2 text-sm outline-none vtn-mono"
                   style={{ border: `1px solid ${C.line}` }}
                   placeholder="R$ 0,00"
-                  value={vtnHaAnterior}
-                  onChange={(e) => setVtnHaAnterior(e.target.value)}
+                  value={imovel.vtnHaAnterior}
+                  onChange={(e) => updateActiveImovel({ vtnHaAnterior: e.target.value })}
                 />
               </div>
             </div>
 
-            {/* Seletor de modo de cálculo do VTN */}
             <div className="mb-1">
               <label className="block text-xs font-medium mb-2" style={{ color: C.inkSoft }}>Como calcular o VTN deste imóvel?</label>
               <div className="grid grid-cols-2 gap-2">
                 <button
-                  type="button" onClick={() => setModo('automatico')}
+                  type="button" onClick={() => updateActiveImovel({ modo: 'automatico' })}
                   className="flex items-center justify-center gap-2 rounded-lg py-2 text-xs font-semibold transition-colors"
-                  style={modo === 'automatico'
-                    ? { background: C.forest, color: '#fff' }
-                    : { background: '#fff', color: C.inkSoft, border: `1px solid ${C.line}` }}
+                  style={imovel.modo === 'automatico' ? { background: C.forest, color: '#fff' } : { background: '#fff', color: C.inkSoft, border: `1px solid ${C.line}` }}
                 >
                   <Calculator size={14} /> Por composição de área
                 </button>
                 <button
-                  type="button" onClick={() => setModo('manual')}
+                  type="button" onClick={() => updateActiveImovel({ modo: 'manual' })}
                   className="flex items-center justify-center gap-2 rounded-lg py-2 text-xs font-semibold transition-colors"
-                  style={modo === 'manual'
-                    ? { background: C.forest, color: '#fff' }
-                    : { background: '#fff', color: C.inkSoft, border: `1px solid ${C.line}` }}
+                  style={imovel.modo === 'manual' ? { background: C.forest, color: '#fff' } : { background: '#fff', color: C.inkSoft, border: `1px solid ${C.line}` }}
                 >
                   <PenLine size={14} /> Informar VTN manualmente
                 </button>
@@ -583,21 +799,16 @@ export default function CalculadoraVTN() {
             </div>
           </div>
 
-          {modo === 'automatico' ? (
+          {imovel.modo === 'automatico' ? (
             <>
-              {/* Aptidão da lavoura (só relevante no modo automático) */}
               <div className="rounded-2xl p-5 shadow-sm" style={{ background: C.paper, border: `1px solid ${C.line}` }}>
                 <label className="block text-xs font-medium mb-2" style={{ color: C.inkSoft }}>Aptidão da lavoura</label>
                 <div className="flex gap-2">
                   {['BOA', 'REGULAR', 'RESTRITA'].map((op) => (
                     <button
-                      key={op}
-                      type="button"
-                      onClick={() => setAptidao(op)}
+                      key={op} type="button" onClick={() => updateActiveImovel({ aptidao: op })}
                       className="px-3 py-1.5 rounded-full text-xs font-semibold transition-colors"
-                      style={aptidao === op
-                        ? { background: C.forest, color: '#fff' }
-                        : { background: '#fff', color: C.inkSoft, border: `1px solid ${C.line}` }}
+                      style={imovel.aptidao === op ? { background: C.forest, color: '#fff' } : { background: '#fff', color: C.inkSoft, border: `1px solid ${C.line}` }}
                     >
                       {op.charAt(0) + op.slice(1).toLowerCase()}
                     </button>
@@ -605,7 +816,6 @@ export default function CalculadoraVTN() {
                 </div>
               </div>
 
-              {/* Composição de área por categoria */}
               <div className="rounded-2xl p-5 shadow-sm" style={{ background: C.paper, border: `1px solid ${C.line}` }}>
                 <div className="flex items-center gap-2 mb-1">
                   <Calculator size={18} color={C.forest} />
@@ -631,7 +841,7 @@ export default function CalculadoraVTN() {
                           <tr key={item.key} className="border-t" style={{ borderColor: C.line }}>
                             <td className="px-2 py-2 align-top">
                               <div className="font-medium">{item.label}</div>
-                              {item.usaAptidao && <div className="text-xs" style={{ color: C.inkSoft }}>aptidão: {aptidao.toLowerCase()}</div>}
+                              {item.usaAptidao && <div className="text-xs" style={{ color: C.inkSoft }}>aptidão: {imovel.aptidao.toLowerCase()}</div>}
                             </td>
                             <td className="px-2 py-2 align-top">
                               <input
@@ -639,8 +849,8 @@ export default function CalculadoraVTN() {
                                 className="w-24 rounded-md px-2 py-1 text-sm outline-none vtn-mono"
                                 style={{ border: `1px solid ${C.line}` }}
                                 placeholder="0,0"
-                                value={areas[item.key]}
-                                onChange={(e) => handleAreaChange(item.key, e.target.value)}
+                                value={imovel.areas[item.key]}
+                                onChange={(e) => updateActiveAreas(item.key, e.target.value)}
                               />
                             </td>
                             <td className="px-2 py-2 align-top vtn-mono" style={{ color: C.inkSoft }}>{formatPct1(pct)}</td>
@@ -658,8 +868,7 @@ export default function CalculadoraVTN() {
                       <tr className="border-t-2" style={{ borderColor: C.forest }}>
                         <td className="px-2 pt-2 font-semibold">Total</td>
                         <td className="px-2 pt-2 font-semibold vtn-mono">{formatHA(resultado.somaAreas)}</td>
-                        <td></td>
-                        <td></td>
+                        <td></td><td></td>
                         <td className="px-2 pt-2 text-right font-semibold vtn-mono">{formatBRL(resultado.vtnTotal)}</td>
                       </tr>
                     </tfoot>
@@ -670,9 +879,7 @@ export default function CalculadoraVTN() {
                   <div className="mt-4 space-y-2">
                     {resultado.inconsistencias.map((msg, i) => (
                       <div key={i} className="flex items-start gap-2 text-sm rounded-lg px-3 py-2"
-                        style={msg.startsWith('Erro')
-                          ? { background: C.dangerSoft, color: C.danger }
-                          : { background: C.wheatSoft, color: '#7A5A18' }}>
+                        style={msg.startsWith('Erro') ? { background: C.dangerSoft, color: C.danger } : { background: C.wheatSoft, color: '#7A5A18' }}>
                         <AlertTriangle size={16} className="flex-shrink-0 mt-0.5" />
                         <span>{msg}</span>
                       </div>
@@ -682,14 +889,12 @@ export default function CalculadoraVTN() {
               </div>
             </>
           ) : (
-            /* Modo manual: informar VTN diretamente */
             <div className="rounded-2xl p-5 shadow-sm" style={{ background: C.paper, border: `1px solid ${C.line}` }}>
               <div className="flex items-center gap-2 mb-1">
                 <PenLine size={18} color={C.forest} />
                 <h2 className="font-semibold text-base">VTN informado manualmente</h2>
               </div>
               <p className="text-xs mb-4" style={{ color: C.inkSoft }}>Use este modo quando o VTN/ha do imóvel já for conhecido e não for necessário decompor por categoria de uso.</p>
-
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-medium mb-1" style={{ color: C.inkSoft }}>VTN por hectare (R$)</label>
@@ -698,8 +903,8 @@ export default function CalculadoraVTN() {
                     className="w-full rounded-lg px-3 py-2 text-sm outline-none vtn-mono"
                     style={{ border: `1px solid ${C.line}` }}
                     placeholder="R$ 0,00"
-                    value={vtnManual}
-                    onChange={(e) => setVtnManual(e.target.value)}
+                    value={imovel.vtnManual}
+                    onChange={(e) => updateActiveImovel({ vtnManual: e.target.value })}
                   />
                 </div>
                 <div>
@@ -709,19 +914,16 @@ export default function CalculadoraVTN() {
                     className="w-full rounded-lg px-3 py-2 text-sm outline-none vtn-mono"
                     style={{ border: `1px solid ${C.line}` }}
                     placeholder="0,0"
-                    value={areaNaoTributavelManual}
-                    onChange={(e) => setAreaNaoTributavelManual(e.target.value)}
+                    value={imovel.areaNaoTributavelManual}
+                    onChange={(e) => updateActiveImovel({ areaNaoTributavelManual: e.target.value })}
                   />
                 </div>
               </div>
-
               {resultado.inconsistencias.length > 0 && (
                 <div className="mt-4 space-y-2">
                   {resultado.inconsistencias.map((msg, i) => (
                     <div key={i} className="flex items-start gap-2 text-sm rounded-lg px-3 py-2"
-                      style={msg.startsWith('Erro')
-                        ? { background: C.dangerSoft, color: C.danger }
-                        : { background: C.wheatSoft, color: '#7A5A18' }}>
+                      style={msg.startsWith('Erro') ? { background: C.dangerSoft, color: C.danger } : { background: C.wheatSoft, color: '#7A5A18' }}>
                       <AlertTriangle size={16} className="flex-shrink-0 mt-0.5" />
                       <span>{msg}</span>
                     </div>
@@ -732,46 +934,24 @@ export default function CalculadoraVTN() {
           )}
         </section>
 
-        {/* ============ COLUNA DIREITA: RESULTADO ============ */}
         <aside className="lg:col-span-2">
           <div className="lg:sticky lg:top-6 space-y-4">
 
             <div className="rounded-2xl p-6 shadow-md" style={{ background: C.forestDark, color: '#fff' }}>
               <p className="text-xs uppercase tracking-widest font-semibold opacity-80">Imposto (ITR) estimado</p>
-              <p className="vtn-mono text-4xl font-extrabold mt-1 mb-4">
-                {bloqueado ? '—' : formatBRL(resultado.imposto)}
-              </p>
-
+              <p className="vtn-mono text-4xl font-extrabold mt-1 mb-4">{bloqueado ? '—' : formatBRL(resultado.imposto)}</p>
               <div className="grid grid-cols-2 gap-3 text-sm border-t pt-4" style={{ borderColor: 'rgba(255,255,255,0.2)' }}>
-                <div>
-                  <p className="opacity-70 text-xs">Área tributável</p>
-                  <p className="font-semibold vtn-mono">{formatHA(resultado.areaTributavel)}</p>
-                </div>
-                <div>
-                  <p className="opacity-70 text-xs">Alíquota aplicada</p>
-                  <p className="font-semibold vtn-mono">{formatPct2(resultado.faixaAliquota.aliquota * 100)}</p>
-                </div>
-                <div>
-                  <p className="opacity-70 text-xs">Coeficiente</p>
-                  <p className="font-semibold vtn-mono">{resultado.coeficiente.toLocaleString('pt-BR', { minimumFractionDigits: 4 })}</p>
-                </div>
-                <div>
-                  <p className="opacity-70 text-xs">Faixa (GU acima de 80%)</p>
-                  <p className="font-semibold text-xs">{resultado.faixaAliquota.label}</p>
-                </div>
+                <div><p className="opacity-70 text-xs">Área tributável</p><p className="font-semibold vtn-mono">{formatHA(resultado.areaTributavel)}</p></div>
+                <div><p className="opacity-70 text-xs">Alíquota aplicada</p><p className="font-semibold vtn-mono">{formatPct2(resultado.faixaAliquota.aliquota * 100)}</p></div>
+                <div><p className="opacity-70 text-xs">Coeficiente</p><p className="font-semibold vtn-mono">{resultado.coeficiente.toLocaleString('pt-BR', { minimumFractionDigits: 4 })}</p></div>
+                <div><p className="opacity-70 text-xs">Faixa (GU acima de 80%)</p><p className="font-semibold text-xs">{resultado.faixaAliquota.label}</p></div>
               </div>
             </div>
 
             <div className="rounded-2xl p-5 shadow-sm" style={{ background: C.paper, border: `1px solid ${C.line}` }}>
               <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <p className="text-xs" style={{ color: C.inkSoft }}>VTN Ponderado</p>
-                  <p className="text-xl font-bold vtn-mono" style={{ color: C.forestDark }}>{formatBRL(resultado.vtnPorHa)}<span className="text-xs font-normal">/ha</span></p>
-                </div>
-                <div>
-                  <p className="text-xs" style={{ color: C.inkSoft }}>VTN Total</p>
-                  <p className="text-xl font-bold vtn-mono" style={{ color: C.forestDark }}>{formatBRL(resultado.vtnTotal)}</p>
-                </div>
+                <div><p className="text-xs" style={{ color: C.inkSoft }}>VTN Ponderado</p><p className="text-xl font-bold vtn-mono" style={{ color: C.forestDark }}>{formatBRL(resultado.vtnPorHa)}<span className="text-xs font-normal">/ha</span></p></div>
+                <div><p className="text-xs" style={{ color: C.inkSoft }}>VTN Total</p><p className="text-xl font-bold vtn-mono" style={{ color: C.forestDark }}>{formatBRL(resultado.vtnTotal)}</p></div>
               </div>
 
               {resultado.diferencaPct != null && (
@@ -791,18 +971,18 @@ export default function CalculadoraVTN() {
                   <input
                     type="text"
                     className="w-full rounded-lg px-3 py-2 text-sm outline-none"
-                    style={{ border: `1px solid ${identificacaoFaltando && !nomeImovel.trim() ? C.danger : C.line}` }}
+                    style={{ border: `1px solid ${identificacaoFaltando && !imovel.nomeImovel.trim() ? C.danger : C.line}` }}
                     placeholder="Nome do imóvel"
-                    value={nomeImovel}
-                    onChange={(e) => setNomeImovel(e.target.value)}
+                    value={imovel.nomeImovel}
+                    onChange={(e) => updateActiveImovel({ nomeImovel: e.target.value })}
                   />
                   <input
                     type="text"
                     className="w-full rounded-lg px-3 py-2 text-sm outline-none"
-                    style={{ border: `1px solid ${identificacaoFaltando && !cib.trim() ? C.danger : C.line}` }}
+                    style={{ border: `1px solid ${identificacaoFaltando && !imovel.cib.trim() ? C.danger : C.line}` }}
                     placeholder="CIB do imóvel"
-                    value={cib}
-                    onChange={(e) => setCib(e.target.value)}
+                    value={imovel.cib}
+                    onChange={(e) => updateActiveImovel({ cib: e.target.value })}
                   />
                 </div>
                 {identificacaoFaltando && (
@@ -831,20 +1011,15 @@ export default function CalculadoraVTN() {
               </div>
             </div>
 
-            {/* Memória de cálculo */}
             <div className="rounded-2xl shadow-sm overflow-hidden" style={{ background: C.paper, border: `1px solid ${C.line}` }}>
-              <button
-                type="button" onClick={() => setMemoriaAberta((v) => !v)}
-                className="w-full flex items-center justify-between px-5 py-4 text-sm font-semibold"
-              >
+              <button type="button" onClick={() => setMemoriaAberta((v) => !v)} className="w-full flex items-center justify-between px-5 py-4 text-sm font-semibold">
                 Memória de cálculo
                 {memoriaAberta ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
               </button>
               {memoriaAberta && (
                 <div className="px-5 pb-5 text-xs space-y-3 vtn-mono" style={{ color: C.inkSoft }}>
                   <p className="font-sans" style={{ color: C.ink }}>Área total: <strong>{formatHA(resultado.areaTotalNum)}</strong></p>
-
-                  {modo === 'automatico' ? (
+                  {imovel.modo === 'automatico' ? (
                     resultado.itens.filter((i) => i.area > 0).map((i) => (
                       <div key={i.key} className="border-t pt-2" style={{ borderColor: C.line }}>
                         <p className="font-sans font-medium" style={{ color: C.ink }}>{i.label}</p>
@@ -860,11 +1035,10 @@ export default function CalculadoraVTN() {
                       <p>Área não tributável: {formatHA(resultado.areaAmbiental)}</p>
                     </div>
                   )}
-
                   <div className="border-t pt-2" style={{ borderColor: C.forest }}>
                     <p className="font-sans" style={{ color: C.ink }}>VTN Total = {formatBRL(resultado.vtnTotal)}</p>
                     <p className="font-sans" style={{ color: C.ink }}>VTN Ponderado = VTN Total ÷ Área Total = {formatBRL(resultado.vtnPorHa)}/ha</p>
-                    <p className="font-sans mt-2" style={{ color: C.ink }}>Área Tributável = Área Total − Área {modo === 'automatico' ? 'Ambiental' : 'Não Tributável'} = {formatHA(resultado.areaTributavel)}</p>
+                    <p className="font-sans mt-2" style={{ color: C.ink }}>Área Tributável = Área Total − Área {imovel.modo === 'automatico' ? 'Ambiental' : 'Não Tributável'} = {formatHA(resultado.areaTributavel)}</p>
                     <p className="font-sans" style={{ color: C.ink }}>Coeficiente = TRUNC(Área Tributável ÷ Área Total, 4) = {resultado.coeficiente}</p>
                     <p className="font-sans" style={{ color: C.ink }}>VTN Tributável = VTN Total × Coeficiente = {formatBRL(resultado.vtnTotal * resultado.coeficiente)}</p>
                     <p className="font-sans" style={{ color: C.ink }}>Alíquota (GU&gt;80%, {resultado.faixaAliquota.label}) = {formatPct2(resultado.faixaAliquota.aliquota * 100)}</p>
@@ -877,7 +1051,6 @@ export default function CalculadoraVTN() {
         </aside>
       </main>
 
-      {/* Tabela de alíquotas oficiais, para transparência/auditoria */}
       <section className="max-w-6xl mx-auto px-6 pb-12">
         <div className="rounded-2xl p-5" style={{ background: C.paper, border: `1px solid ${C.line}` }}>
           <h3 className="font-semibold text-sm mb-3">Tabela de alíquotas do ITR aplicada (Grau de Utilização acima de 80%)</h3>
@@ -891,10 +1064,7 @@ export default function CalculadoraVTN() {
               </thead>
               <tbody>
                 {ALIQUOTA_FAIXAS.map((f) => (
-                  <tr key={f.label} className="border-t vtn-mono" style={{
-                    borderColor: C.line,
-                    background: resultado.faixaAliquota.label === f.label ? C.forestSoft : 'transparent',
-                  }}>
+                  <tr key={f.label} className="border-t vtn-mono" style={{ borderColor: C.line, background: resultado.faixaAliquota.label === f.label ? C.forestSoft : 'transparent' }}>
                     <td className="py-1.5 pr-4">{f.label}</td>
                     <td className="py-1.5 font-semibold">{formatPct2(f.aliquota * 100)}</td>
                   </tr>
