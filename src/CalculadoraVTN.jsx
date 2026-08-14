@@ -9,6 +9,7 @@ import autoTable from 'jspdf-autotable';
 import VTN_DATA_2026 from './vtn_2026.json';
 import { extractLinesFromPdf, parseDeclaracaoITR, mapCategoriasFromDeclaracao } from './parseDeclaracaoITR';
 import { LOGO_SAFRAS_CIFRAS_PNG_BASE64 } from './logoSafrasCifras';
+import { POPPINS_REGULAR_BASE64, POPPINS_BOLD_BASE64 } from './poppinsFont';
 
 // =====================================================================
 // PALETA E TOKENS DE DESIGN
@@ -265,7 +266,9 @@ export default function CalculadoraVTN() {
   }), [imovel, vtnRow]);
 
   const bloqueado = resultado.inconsistencias.some((m) => m.startsWith('Erro'));
+  const semIdentificacao = imoveis.filter((im) => !im.nomeImovel.trim() || !im.cib.trim());
   const identificacaoFaltando = tentouGerar && (!imovel.nomeImovel.trim() || !imovel.cib.trim());
+  const algumSemIdentificacao = tentouGerar && semIdentificacao.length > 0;
 
   async function processarArquivos(fileList) {
     const files = Array.from(fileList || []).filter((f) => f.type === 'application/pdf' || /\.pdf$/i.test(f.name));
@@ -412,19 +415,41 @@ export default function CalculadoraVTN() {
   }
 
   function handleGerarRelatorio() {
-    if (!imovel.nomeImovel.trim() || !imovel.cib.trim()) {
+    const semIdentificacao = imoveis.filter((im) => !im.nomeImovel.trim() || !im.cib.trim());
+    if (semIdentificacao.length > 0) {
       setTentouGerar(true);
       return;
     }
 
     const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+    doc.addFileToVFS('Poppins-Regular.ttf', POPPINS_REGULAR_BASE64);
+    doc.addFont('Poppins-Regular.ttf', 'Poppins', 'normal');
+    doc.addFileToVFS('Poppins-Bold.ttf', POPPINS_BOLD_BASE64);
+    doc.addFont('Poppins-Bold.ttf', 'Poppins', 'bold');
+
     const pageW = 210;
     const margem = 14;
+    const FOREST = [21, 63, 43];
+    const FOREST_SOFT = [231, 239, 231];
+    const INK_SOFT = [90, 100, 85];
 
-    doc.setFillColor(21, 63, 43);
+    // Calcula o resultado de cada imóvel da sessão (não só o ativo)
+    const linhasRelatorio = imoveis.map((im) => {
+      const linha = VTN_DATA_2026.find((r) => r[0] === im.uf && r[1] === im.municipio) || null;
+      const res = calcularVTN({
+        modo: im.modo, areaTotal: im.areaTotal, aptidao: im.aptidao, areas: im.areas,
+        vtnRow: linha, vtnHaAnterior: im.vtnHaAnterior, vtnManual: im.vtnManual,
+        areaNaoTributavelManual: im.areaNaoTributavelManual,
+      });
+      const temErro = res.inconsistencias.some((m) => m.startsWith('Erro'));
+      return { im, vtnRow: linha, resultado: res, temErro };
+    });
+
+    // --- Faixa superior (banner) ---
+    doc.setFillColor(...FOREST);
     doc.rect(0, 0, pageW, 24, 'F');
     doc.setTextColor(255, 255, 255);
-    doc.setFont('helvetica', 'bold');
+    doc.setFont('Poppins', 'bold');
     doc.setFontSize(15);
     doc.text('Gestão Fundiária', margem, 15);
     try {
@@ -433,151 +458,131 @@ export default function CalculadoraVTN() {
 
     let y = 34;
     doc.setTextColor(0, 0, 0);
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(17);
-    doc.text(imovel.nomeImovel, margem, y);
+    doc.setFont('Poppins', 'bold');
+    doc.setFontSize(16);
+    doc.text('Relatório de VTN e ITR', margem, y);
     y += 6;
-    doc.setFont('helvetica', 'normal');
+    doc.setFont('Poppins', 'normal');
     doc.setFontSize(9);
-    doc.setTextColor(90, 100, 85);
+    doc.setTextColor(...INK_SOFT);
     const dataGeracao = new Date().toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-    doc.text(`Data de geração: ${dataGeracao} · Exercício 2026`, margem, y);
+    const qtdTexto = imoveis.length === 1 ? '1 imóvel' : `${imoveis.length} imóveis`;
+    doc.text(`${qtdTexto} · Exercício 2026 · Gerado em ${dataGeracao}`, margem, y);
 
-    doc.setDrawColor(31, 92, 63);
+    doc.setDrawColor(...FOREST);
     doc.setLineWidth(0.6);
     y += 4;
     doc.line(margem, y, pageW - margem, y);
     y += 8;
 
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(12);
-    doc.setTextColor(0, 0, 0);
-    doc.text('Quadro de Informações', margem, y);
-    y += 6;
-
     const sectionHeader = (titulo, yPos) => {
-      doc.setFillColor(231, 239, 231);
+      doc.setFillColor(...FOREST_SOFT);
       doc.rect(margem, yPos, pageW - margem * 2, 7, 'F');
-      doc.setFont('helvetica', 'bold');
+      doc.setFont('Poppins', 'bold');
       doc.setFontSize(10);
-      doc.setTextColor(21, 63, 43);
+      doc.setTextColor(...FOREST);
       doc.text(titulo, margem + 3, yPos + 5);
       return yPos + 7;
     };
 
-    y = sectionHeader('Identificação', y);
-    autoTable(doc, {
-      startY: y,
-      theme: 'plain',
-      margin: { left: margem, right: margem },
-      styles: { fontSize: 9, cellPadding: 1.4 },
-      alternateRowStyles: { fillColor: [246, 249, 246] },
-      columnStyles: { 0: { fontStyle: 'bold', cellWidth: 45 } },
-      body: [
-        ['CIB', imovel.cib],
-        ['Município / UF', imovel.municipio ? `${imovel.municipio} / ${imovel.uf}` : '—'],
-        ['Modo de cálculo', imovel.modo === 'automatico' ? 'Composição por categoria de área' : 'VTN informado manualmente'],
-        ...(imovel.importado ? [['Origem dos dados', `Importado de ${imovel.importado.arquivoNome} (declaração ${imovel.importado.exercicioDeclaracao || '—'})`]] : []),
-      ],
-    });
-    y = doc.lastAutoTable.finalY + 6;
+    function garantirEspaco(alturaNecessaria) {
+      if (y + alturaNecessaria > 280) {
+        doc.addPage();
+        y = 20;
+      }
+    }
 
-    if (vtnRow) {
-      y = sectionHeader(`Valores de pauta — ${imovel.municipio}/${imovel.uf} (Receita Federal, Exercício 2026)`, y);
+    // --- Tabela de valores de pauta (municípios distintos envolvidos) ---
+    const municipiosDistintos = [];
+    const vistos = new Set();
+    for (const { im, vtnRow: vr } of linhasRelatorio) {
+      if (im.uf && im.municipio && !vistos.has(im.uf + '|' + im.municipio)) {
+        vistos.add(im.uf + '|' + im.municipio);
+        municipiosDistintos.push({ uf: im.uf, municipio: im.municipio, vtnRow: vr });
+      }
+    }
+
+    if (municipiosDistintos.length > 0) {
+      garantirEspaco(20);
+      y = sectionHeader('Valores de pauta — Receita Federal, Exercício 2026', y);
       autoTable(doc, {
         startY: y,
         theme: 'grid',
         margin: { left: margem, right: margem },
-        headStyles: { fillColor: [21, 63, 43], fontSize: 7.5 },
-        styles: { fontSize: 8, cellPadding: 1.6 },
-        head: [CAMPOS_PAUTA.map((idx) => NOME_CAMPO_VTN[idx])],
-        body: [CAMPOS_PAUTA.map((idx) => (vtnRow[idx] != null ? formatBRL(vtnRow[idx]) : 'indisponível'))],
+        headStyles: { fillColor: FOREST, fontSize: 7.5, font: 'Poppins', fontStyle: 'bold' },
+        styles: { fontSize: 7.5, cellPadding: 1.6, font: 'Poppins' },
+        head: [['Município/UF', ...CAMPOS_PAUTA.map((idx) => NOME_CAMPO_VTN[idx])]],
+        body: municipiosDistintos.map((m) => [
+          `${m.municipio}/${m.uf}`,
+          ...CAMPOS_PAUTA.map((idx) => (m.vtnRow && m.vtnRow[idx] != null ? formatBRL(m.vtnRow[idx]) : 'indisponível')),
+        ]),
       });
-      y = doc.lastAutoTable.finalY + 6;
+      y = doc.lastAutoTable.finalY + 8;
     }
 
-    y = sectionHeader(imovel.modo === 'automatico' ? 'Composição da Área' : 'VTN Informado', y);
-    if (imovel.modo === 'automatico') {
-      const linhas = resultado.itens.filter((i) => i.area > 0).map((i) => [
-        i.label, formatHA(i.area),
-        formatPct1(resultado.areaTotalNum > 0 ? (i.area / resultado.areaTotalNum) * 100 : 0),
-        i.vtnUnitario != null ? formatBRL(i.vtnUnitario) + '/ha' : 'indisponível',
-        formatBRL(i.vtnParcial),
-      ]);
-      autoTable(doc, {
-        startY: y,
-        theme: 'grid',
-        margin: { left: margem, right: margem },
-        headStyles: { fillColor: [21, 63, 43], fontSize: 8 },
-        styles: { fontSize: 8, cellPadding: 1.6 },
-        head: [['Categoria', 'Área', '%', 'VTN unitário', 'VTN parcial']],
-        body: linhas.length ? linhas : [['—', '—', '—', '—', '—']],
-        foot: [['Total', formatHA(resultado.somaAreas), '', '', formatBRL(resultado.vtnTotal)]],
-        footStyles: { fillColor: [231, 239, 231], textColor: 0, fontStyle: 'bold', fontSize: 8 },
-      });
-    } else {
-      autoTable(doc, {
-        startY: y,
-        theme: 'plain',
-        margin: { left: margem, right: margem },
-        styles: { fontSize: 9, cellPadding: 1.2 },
-        alternateRowStyles: { fillColor: [246, 249, 246] },
-        columnStyles: { 0: { fontStyle: 'bold', cellWidth: 60 } },
-        body: [
-          ['VTN por hectare informado', formatBRL(resultado.vtnPorHa)],
-          ['Área não tributável (APP, Reserva, etc.)', formatHA(resultado.areaAmbiental)],
-        ],
-      });
+    // --- Um quadro verde de resumo por imóvel ---
+    const boxH = 36;
+    for (const { im, resultado: res, temErro } of linhasRelatorio) {
+      garantirEspaco(boxH + 4);
+
+      doc.setFillColor(...FOREST);
+      doc.roundedRect(margem, y, pageW - margem * 2, boxH, 2, 2, 'F');
+      doc.setTextColor(255, 255, 255);
+
+      doc.setFont('Poppins', 'bold');
+      doc.setFontSize(12);
+      doc.text(im.nomeImovel, margem + 5, y + 8);
+      doc.setFont('Poppins', 'normal');
+      doc.setFontSize(9);
+      doc.text(`CIB: ${im.cib}`, pageW - margem - 5, y + 8, { align: 'right' });
+
+      doc.setDrawColor(255, 255, 255);
+      doc.setLineWidth(0.2);
+      doc.line(margem + 5, y + 11, pageW - margem - 5, y + 11);
+
+      doc.setFont('Poppins', 'normal');
+      doc.setFontSize(7.5);
+      doc.text('IMPOSTO (ITR) ESTIMADO', margem + 5, y + 18);
+      doc.setFont('Poppins', 'bold');
+      doc.setFontSize(17);
+      doc.text(temErro ? '—' : formatBRL(res.imposto), margem + 5, y + 27);
+
+      const colX = [100, 135, 165];
+      doc.setFont('Poppins', 'normal');
+      doc.setFontSize(7.5);
+      doc.text('VTN/ha', colX[0], y + 18);
+      doc.text('Alíquota', colX[1], y + 18);
+      doc.text('Área tributável', colX[2], y + 18);
+      doc.setFont('Poppins', 'bold');
+      doc.setFontSize(10.5);
+      doc.text(temErro ? '—' : `${formatBRL(res.vtnPorHa)}/ha`, colX[0], y + 25);
+      doc.text(temErro ? '—' : formatPct2(res.faixaAliquota.aliquota * 100), colX[1], y + 25);
+      doc.text(temErro ? '—' : formatHA(res.areaTributavel), colX[2], y + 25);
+
+      if (im.municipio) {
+        doc.setFont('Poppins', 'normal');
+        doc.setFontSize(7.5);
+        doc.setTextColor(220, 230, 222);
+        doc.text(`${im.municipio}/${im.uf}`, margem + 5, y + 33);
+      }
+
+      y += boxH + 5;
     }
-    y = doc.lastAutoTable.finalY + 8;
 
-    if (y > 230) { doc.addPage(); y = 20; }
-
-    doc.setFillColor(21, 63, 43);
-    doc.roundedRect(margem, y, pageW - margem * 2, 30, 2, 2, 'F');
-    doc.setTextColor(255, 255, 255);
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(8);
-    doc.text('IMPOSTO (ITR) ESTIMADO', margem + 5, y + 7);
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(18);
-    doc.text(bloqueado ? '—' : formatBRL(resultado.imposto), margem + 5, y + 16);
-
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(8);
-    const colX = [95, 130, 160];
-    doc.text('VTN Ponderado', colX[0], y + 7);
-    doc.text('VTN Total', colX[1], y + 7);
-    doc.text('Alíquota', colX[2], y + 7);
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(10);
-    doc.text(`${formatBRL(resultado.vtnPorHa)}/ha`, colX[0], y + 13);
-    doc.text(formatBRL(resultado.vtnTotal), colX[1], y + 13);
-    doc.text(formatPct2(resultado.faixaAliquota.aliquota * 100), colX[2], y + 13);
-
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(8);
-    doc.text('Área tributável', colX[0], y + 21);
-    doc.text('Coeficiente', colX[1], y + 21);
-    doc.text('Faixa (GU>80%)', colX[2], y + 21);
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(10);
-    doc.text(formatHA(resultado.areaTributavel), colX[0], y + 27);
-    doc.text(resultado.coeficiente.toLocaleString('pt-BR', { minimumFractionDigits: 4 }), colX[1], y + 27);
-    doc.setFontSize(8);
-    doc.text(resultado.faixaAliquota.label, colX[2], y + 27);
-
+    // --- Rodapé (todas as páginas) ---
     const totalPaginas = doc.internal.getNumberOfPages();
     for (let p = 1; p <= totalPaginas; p++) {
       doc.setPage(p);
-      doc.setFont('helvetica', 'normal');
+      doc.setFont('Poppins', 'normal');
       doc.setFontSize(8);
-      doc.setTextColor(120, 130, 115);
+      doc.setTextColor(...INK_SOFT);
       doc.text('Gestão Fundiária', margem, 289);
       doc.text(`Página ${p} de ${totalPaginas}`, pageW - margem, 289, { align: 'right' });
     }
 
-    const nomeArquivo = `Relatorio_VTN_${imovel.nomeImovel.replace(/\s+/g, '_')}.pdf`;
+    const nomeArquivo = imoveis.length === 1
+      ? `Relatorio_VTN_${imovel.nomeImovel.replace(/\s+/g, '_')}.pdf`
+      : `Relatorio_VTN_Lote_${imoveis.length}_imoveis.pdf`;
     doc.save(nomeArquivo);
   }
 
@@ -1081,6 +1086,11 @@ export default function CalculadoraVTN() {
                 {identificacaoFaltando && (
                   <p className="text-xs mb-2" style={{ color: C.danger }}>Preencha Nome do imóvel e CIB para gerar o relatório.</p>
                 )}
+                {!identificacaoFaltando && algumSemIdentificacao && (
+                  <p className="text-xs mb-2" style={{ color: C.danger }}>
+                    {semIdentificacao.length === 1 ? 'Há 1 outro imóvel' : `Há ${semIdentificacao.length} outros imóveis`} nesta sessão sem Nome/CIB preenchidos — o relatório inclui todos os imóveis, preencha-os antes de gerar.
+                  </p>
+                )}
               </div>
 
               <div className="grid grid-cols-2 gap-2">
@@ -1094,12 +1104,11 @@ export default function CalculadoraVTN() {
                 </button>
                 <button
                   type="button" onClick={handleGerarRelatorio}
-                  disabled={bloqueado}
-                  className="flex items-center justify-center gap-2 rounded-lg py-2 text-sm font-semibold transition-colors disabled:opacity-50"
+                  className="flex items-center justify-center gap-2 rounded-lg py-2 text-sm font-semibold transition-colors"
                   style={{ background: C.forest, color: '#fff' }}
                 >
                   <FileDown size={15} />
-                  Gerar relatório
+                  {imoveis.length > 1 ? `Gerar relatório (${imoveis.length})` : 'Gerar relatório'}
                 </button>
               </div>
             </div>
@@ -1171,3 +1180,4 @@ export default function CalculadoraVTN() {
     </div>
   );
 }
+
