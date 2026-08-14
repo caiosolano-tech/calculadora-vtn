@@ -1,5 +1,7 @@
 import React, { useState, useMemo } from 'react';
-import { Sprout, MapPin, Calculator, AlertTriangle, TrendingUp, TrendingDown, Info, ClipboardCopy, ChevronDown, ChevronUp, Leaf, Table2, PenLine } from 'lucide-react';
+import { Sprout, MapPin, Calculator, AlertTriangle, TrendingUp, TrendingDown, Info, ClipboardCopy, ChevronDown, ChevronUp, Leaf, Table2, PenLine, FileDown, User } from 'lucide-react';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 import VTN_DATA_2026 from './vtn_2026.json';
 
 // =====================================================================
@@ -193,6 +195,8 @@ export default function CalculadoraVTN() {
     return Array.from(s).sort();
   }, []);
 
+  const [nomeImovel, setNomeImovel] = useState('');
+  const [cib, setCib] = useState('');
   const [uf, setUf] = useState('');
   const [municipio, setMunicipio] = useState('');
   const [aptidao, setAptidao] = useState('BOA');
@@ -207,6 +211,7 @@ export default function CalculadoraVTN() {
   const [areaNaoTributavelManual, setAreaNaoTributavelManual] = useState('');
   const [memoriaAberta, setMemoriaAberta] = useState(true);
   const [copiado, setCopiado] = useState(false);
+  const [tentouGerar, setTentouGerar] = useState(false);
 
   const municipios = useMemo(() => {
     if (!uf) return [];
@@ -249,6 +254,169 @@ export default function CalculadoraVTN() {
   }
 
   const bloqueado = resultado.inconsistencias.some((m) => m.startsWith('Erro'));
+  const identificacaoFaltando = tentouGerar && (!nomeImovel.trim() || !cib.trim());
+
+  function handleGerarRelatorio() {
+    if (!nomeImovel.trim() || !cib.trim()) {
+      setTentouGerar(true);
+      return;
+    }
+    const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+    const corForest = [21, 63, 43];
+    const corInkSoft = [90, 100, 85];
+    const corLinha = [223, 218, 205];
+    const margem = 14;
+    let y = 16;
+
+    // Cabeçalho
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(8);
+    doc.setTextColor(...corForest);
+    doc.text('GESTÃO FUNDIÁRIA · SAFRAS & CIFRAS', margem, y);
+    doc.setFontSize(16);
+    y += 7;
+    doc.text('Relatório de VTN e ITR', margem, y);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(9);
+    doc.setTextColor(...corInkSoft);
+    const dataGeracao = new Date().toLocaleDateString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric' });
+    doc.text(`Gerado em ${dataGeracao} · Exercício 2026`, margem, y + 5);
+
+    doc.setDrawColor(...corLinha);
+    y += 9;
+    doc.line(margem, y, 196, y);
+    y += 7;
+
+    // Identificação
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(10);
+    doc.setTextColor(0, 0, 0);
+    doc.text('Identificação', margem, y);
+    y += 5;
+    autoTable(doc, {
+      startY: y,
+      theme: 'plain',
+      margin: { left: margem, right: margem },
+      styles: { fontSize: 9, cellPadding: 1.2 },
+      columnStyles: { 0: { fontStyle: 'bold', cellWidth: 40 } },
+      body: [
+        ['Imóvel', nomeImovel || '—'],
+        ['CIB', cib || '—'],
+        ['Município / UF', municipio ? `${municipio} / ${uf}` : '—'],
+        ['Modo de cálculo', modo === 'automatico' ? 'Composição por categoria de área' : 'VTN informado manualmente'],
+      ],
+    });
+    y = doc.lastAutoTable.finalY + 6;
+
+    // Valores de pauta (se município selecionado)
+    if (vtnRow) {
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(10);
+      doc.text(`Valores de pauta — ${municipio}/${uf} (Receita Federal, Exercício 2026)`, margem, y);
+      y += 4;
+      autoTable(doc, {
+        startY: y,
+        theme: 'grid',
+        margin: { left: margem, right: margem },
+        headStyles: { fillColor: corForest, fontSize: 8 },
+        styles: { fontSize: 8, cellPadding: 1.6 },
+        head: [CAMPOS_PAUTA.map((idx) => NOME_CAMPO_VTN[idx])],
+        body: [CAMPOS_PAUTA.map((idx) => vtnRow[idx] != null ? formatBRL(vtnRow[idx]) : 'indisponível')],
+      });
+      y = doc.lastAutoTable.finalY + 6;
+    }
+
+    // Composição da área (modo automático) ou VTN manual
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(10);
+    doc.text(modo === 'automatico' ? 'Composição da área' : 'VTN informado', margem, y);
+    y += 4;
+
+    if (modo === 'automatico') {
+      const linhas = resultado.itens
+        .filter((i) => i.area > 0)
+        .map((i) => [
+          i.label,
+          formatHA(i.area),
+          formatPct1(resultado.areaTotalNum > 0 ? (i.area / resultado.areaTotalNum) * 100 : 0),
+          i.vtnUnitario != null ? formatBRL(i.vtnUnitario) + '/ha' : 'indisponível',
+          formatBRL(i.vtnParcial),
+        ]);
+      autoTable(doc, {
+        startY: y,
+        theme: 'grid',
+        margin: { left: margem, right: margem },
+        headStyles: { fillColor: corForest, fontSize: 8 },
+        styles: { fontSize: 8, cellPadding: 1.6 },
+        head: [['Categoria', 'Área', '%', 'VTN unitário', 'VTN parcial']],
+        body: linhas.length ? linhas : [['—', '—', '—', '—', '—']],
+        foot: [['Total', formatHA(resultado.somaAreas), '', '', formatBRL(resultado.vtnTotal)]],
+        footStyles: { fillColor: [231, 239, 231], textColor: 0, fontStyle: 'bold', fontSize: 8 },
+      });
+    } else {
+      autoTable(doc, {
+        startY: y,
+        theme: 'plain',
+        margin: { left: margem, right: margem },
+        styles: { fontSize: 9, cellPadding: 1.2 },
+        columnStyles: { 0: { fontStyle: 'bold', cellWidth: 50 } },
+        body: [
+          ['VTN por hectare informado', formatBRL(resultado.vtnPorHa)],
+          ['Área não tributável (APP, Reserva, etc.)', formatHA(resultado.areaAmbiental)],
+        ],
+      });
+    }
+    y = doc.lastAutoTable.finalY + 8;
+
+    // Resultado final (destaque)
+    doc.setFillColor(...corForest);
+    doc.roundedRect(margem, y, 182, 30, 2, 2, 'F');
+    doc.setTextColor(255, 255, 255);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    doc.text('IMPOSTO (ITR) ESTIMADO', margem + 5, y + 7);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(18);
+    doc.text(bloqueado ? '—' : formatBRL(resultado.imposto), margem + 5, y + 16);
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    const colX = [95, 125, 155];
+    doc.text('VTN Ponderado', colX[0], y + 7);
+    doc.text('VTN Total', colX[1], y + 7);
+    doc.text('Alíquota', colX[2], y + 7);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(10);
+    doc.text(`${formatBRL(resultado.vtnPorHa)}/ha`, colX[0], y + 13);
+    doc.text(formatBRL(resultado.vtnTotal), colX[1], y + 13);
+    doc.text(formatPct2(resultado.faixaAliquota.aliquota * 100), colX[2], y + 13);
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    doc.text('Área tributável', colX[0], y + 21);
+    doc.text('Coeficiente', colX[1], y + 21);
+    doc.text('Faixa (GU>80%)', colX[2], y + 21);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(10);
+    doc.text(formatHA(resultado.areaTributavel), colX[0], y + 27);
+    doc.text(resultado.coeficiente.toLocaleString('pt-BR', { minimumFractionDigits: 4 }), colX[1], y + 27);
+    doc.setFontSize(8);
+    doc.text(resultado.faixaAliquota.label, colX[2], y + 27);
+
+    y += 38;
+
+    // Rodapé
+    doc.setTextColor(...corInkSoft);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.5);
+    doc.text(
+      'Fonte dos valores de VTN: Receita Federal, Tabela de Valores de Terra Nua, Exercício 2026. Simulação considera Grau de Utilização acima de 80%, conforme metodologia interna.',
+      margem, y, { maxWidth: 182 }
+    );
+
+    const nomeArquivo = `Relatorio_VTN_${(nomeImovel || municipio || 'imovel').replace(/\s+/g, '_')}.pdf`;
+    doc.save(nomeArquivo);
+  }
 
   return (
     <div className="vtn-app min-h-screen w-full" style={{ background: C.bg, color: C.ink }}>
@@ -615,14 +783,52 @@ export default function CalculadoraVTN() {
                 </div>
               )}
 
-              <button
-                type="button" onClick={handleCopiar}
-                className="mt-4 w-full flex items-center justify-center gap-2 rounded-lg py-2 text-sm font-semibold transition-colors"
-                style={{ background: copiado ? C.forestSoft : C.forest, color: copiado ? C.forestDark : '#fff' }}
-              >
-                <ClipboardCopy size={15} />
-                {copiado ? 'Copiado!' : 'Copiar resultado'}
-              </button>
+              <div className="mt-4 pt-4 border-t" style={{ borderColor: C.line }}>
+                <p className="text-xs font-medium mb-2 flex items-center gap-1.5" style={{ color: C.inkSoft }}>
+                  <User size={13} /> Identificação do imóvel <span style={{ color: C.danger }}>*</span>
+                </p>
+                <div className="grid grid-cols-2 gap-2 mb-2">
+                  <input
+                    type="text"
+                    className="w-full rounded-lg px-3 py-2 text-sm outline-none"
+                    style={{ border: `1px solid ${identificacaoFaltando && !nomeImovel.trim() ? C.danger : C.line}` }}
+                    placeholder="Nome do imóvel"
+                    value={nomeImovel}
+                    onChange={(e) => setNomeImovel(e.target.value)}
+                  />
+                  <input
+                    type="text"
+                    className="w-full rounded-lg px-3 py-2 text-sm outline-none"
+                    style={{ border: `1px solid ${identificacaoFaltando && !cib.trim() ? C.danger : C.line}` }}
+                    placeholder="CIB do imóvel"
+                    value={cib}
+                    onChange={(e) => setCib(e.target.value)}
+                  />
+                </div>
+                {identificacaoFaltando && (
+                  <p className="text-xs mb-2" style={{ color: C.danger }}>Preencha Nome do imóvel e CIB para gerar o relatório.</p>
+                )}
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button" onClick={handleCopiar}
+                  className="flex items-center justify-center gap-2 rounded-lg py-2 text-sm font-semibold transition-colors"
+                  style={{ background: copiado ? C.forestSoft : '#fff', color: copiado ? C.forestDark : C.inkSoft, border: `1px solid ${C.line}` }}
+                >
+                  <ClipboardCopy size={15} />
+                  {copiado ? 'Copiado!' : 'Copiar'}
+                </button>
+                <button
+                  type="button" onClick={handleGerarRelatorio}
+                  disabled={bloqueado}
+                  className="flex items-center justify-center gap-2 rounded-lg py-2 text-sm font-semibold transition-colors disabled:opacity-50"
+                  style={{ background: C.forest, color: '#fff' }}
+                >
+                  <FileDown size={15} />
+                  Gerar relatório
+                </button>
+              </div>
             </div>
 
             {/* Memória de cálculo */}
