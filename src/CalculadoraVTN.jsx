@@ -580,6 +580,38 @@ export default function CalculadoraVTN() {
       y += boxH + 5;
     }
 
+    // --- Total do imposto de todos os imóveis (só quando há mais de 1) ---
+    if (linhasRelatorio.length > 1) {
+      const comErro = linhasRelatorio.filter((l) => l.temErro);
+      const totalImposto = linhasRelatorio
+        .filter((l) => !l.temErro)
+        .reduce((s, l) => s + l.resultado.imposto, 0);
+      const boxTotalH = comErro.length > 0 ? 26 : 20;
+
+      garantirEspaco(boxTotalH + 4);
+      doc.setDrawColor(...FOREST);
+      doc.setLineWidth(0.6);
+      doc.setFillColor(...FOREST_SOFT);
+      doc.roundedRect(margem, y, pageW - margem * 2, boxTotalH, 2, 2, 'FD');
+      doc.setTextColor(...FOREST);
+      doc.setFont('Poppins', 'normal');
+      doc.setFontSize(9);
+      doc.text(`TOTAL DO IMPOSTO — ${linhasRelatorio.length} imóveis`, margem + 5, y + 8);
+      doc.setFont('Poppins', 'bold');
+      doc.setFontSize(19);
+      doc.text(formatBRL(totalImposto), margem + 5, y + 16);
+
+      if (comErro.length > 0) {
+        doc.setFont('Poppins', 'normal');
+        doc.setFontSize(7.5);
+        doc.text(
+          `Não inclui ${comErro.length} imóve${comErro.length === 1 ? 'l' : 'is'} com pendência de cálculo (${comErro.map((l) => l.im.nomeImovel).join(', ')})`,
+          margem + 5, y + 22
+        );
+      }
+      y += boxTotalH + 6;
+    }
+
     // --- Rodapé (todas as páginas) ---
     const totalPaginas = doc.internal.getNumberOfPages();
     for (let p = 1; p <= totalPaginas; p++) {
