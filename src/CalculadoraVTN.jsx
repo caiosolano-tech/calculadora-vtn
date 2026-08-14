@@ -220,7 +220,16 @@ export default function CalculadoraVTN() {
   function handleAplicarVtnGlobal() {
     const valor = Number(vtnGlobal);
     if (!(valor > 0)) return;
-    setImoveis((prev) => prev.map((im) => ({ ...im, modo: 'manual', vtnManual: String(valor) })));
+    setImoveis((prev) => prev.map((im) => {
+      // Preserva uma área não tributável já digitada manualmente; caso contrário,
+      // usa a área "Ambiental" já conhecida do imóvel (digitada ou importada da
+      // declaração de ITR) — sem isso, o modo manual zerava essa área.
+      const jaTemManual = im.areaNaoTributavelManual !== '' && Number(im.areaNaoTributavelManual) > 0;
+      const areaNaoTributavelManual = jaTemManual
+        ? im.areaNaoTributavelManual
+        : (im.areas.ambiental || '');
+      return { ...im, modo: 'manual', vtnManual: String(valor), areaNaoTributavelManual };
+    }));
     setVtnGlobalAplicado(true);
     setTimeout(() => setVtnGlobalAplicado(false), 2500);
   }
