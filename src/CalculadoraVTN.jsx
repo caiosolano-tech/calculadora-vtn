@@ -187,6 +187,8 @@ export default function CalculadoraVTN() {
   }, []);
 
   const [imoveis, setImoveis] = useState(() => [criarImovelVazio()]);
+  const [vtnGlobal, setVtnGlobal] = useState('');
+  const [vtnGlobalAplicado, setVtnGlobalAplicado] = useState(false);
   const [activeId, setActiveId] = useState(() => imoveis[0].id);
   const [memoriaAberta, setMemoriaAberta] = useState(true);
   const [copiado, setCopiado] = useState(false);
@@ -213,6 +215,14 @@ export default function CalculadoraVTN() {
     setImoveis((prev) => [...prev, novo]);
     setActiveId(novo.id);
     setTentouGerar(false);
+  }
+
+  function handleAplicarVtnGlobal() {
+    const valor = Number(vtnGlobal);
+    if (!(valor > 0)) return;
+    setImoveis((prev) => prev.map((im) => ({ ...im, modo: 'manual', vtnManual: String(valor) })));
+    setVtnGlobalAplicado(true);
+    setTimeout(() => setVtnGlobalAplicado(false), 2500);
   }
 
   function handleRemoverImovel(id, ev) {
@@ -612,6 +622,30 @@ export default function CalculadoraVTN() {
                 )}
               </button>
             ))}
+          </div>
+
+          {/* Aplicar um único VTN/ha a todos os imóveis da sessão */}
+          <div className="flex flex-wrap items-center gap-2 mb-4 rounded-xl px-3 py-2.5" style={{ background: C.bg, border: `1px solid ${C.line}` }}>
+            <PenLine size={15} color={C.forest} className="flex-shrink-0" />
+            <span className="text-xs font-medium" style={{ color: C.inkSoft }}>Aplicar um VTN/ha a todos os {imoveis.length} imóve{imoveis.length === 1 ? 'l' : 'is'}:</span>
+            <input
+              type="number" min="0" step="0.01" inputMode="decimal"
+              className="rounded-lg px-2.5 py-1.5 text-sm outline-none vtn-mono w-32"
+              style={{ border: `1px solid ${C.line}` }}
+              placeholder="R$ 0,00"
+              value={vtnGlobal}
+              onChange={(e) => setVtnGlobal(e.target.value)}
+            />
+            <button
+              type="button" onClick={handleAplicarVtnGlobal}
+              disabled={!(Number(vtnGlobal) > 0)}
+              className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold disabled:opacity-50"
+              style={{ background: vtnGlobalAplicado ? C.forestSoft : C.forest, color: vtnGlobalAplicado ? C.forestDark : '#fff' }}
+            >
+              {vtnGlobalAplicado ? <CheckCircle2 size={14} /> : null}
+              {vtnGlobalAplicado ? `Aplicado a ${imoveis.length}` : 'Aplicar a todos'}
+            </button>
+            <span className="text-xs" style={{ color: C.inkSoft }}>— muda cada imóvel para o modo "VTN manual" com esse valor.</span>
           </div>
 
           {/* Zona de arrastar-e-soltar */}
