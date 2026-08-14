@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { Sprout, MapPin, Calculator, AlertTriangle, TrendingUp, TrendingDown, Info, ClipboardCopy, ChevronDown, ChevronUp, Leaf } from 'lucide-react';
+import { Sprout, MapPin, Calculator, AlertTriangle, TrendingUp, TrendingDown, Info, ClipboardCopy, ChevronDown, ChevronUp, Leaf, Table2, PenLine } from 'lucide-react';
 import VTN_DATA_2026 from './vtn_2026.json';
 
 // =====================================================================
@@ -61,6 +61,9 @@ const NOME_CAMPO_VTN = {
   7: 'Preservação da Fauna e da Flora',
 };
 
+// Ordem/lista fixa para exibir o "quadro de pauta" com os 6 valores do município
+const CAMPOS_PAUTA = [2, 3, 4, 5, 6, 7];
+
 // Tabela oficial de alíquotas do ITR — Grau de Utilização acima de 80%
 const ALIQUOTA_FAIXAS = [
   { limite: 49.9, aliquota: 0.0003, label: 'até 50 ha' },
@@ -81,9 +84,41 @@ function getAliquota(areaTotal) {
 
 // =====================================================================
 // MOTOR DE CÁLCULO — função pura, sem estado de interface.
-// Reproduz fielmente a lógica identificada na planilha "VTN 2025 v3".
+// Suporta dois modos:
+//  - "automatico": reproduz fielmente a lógica da planilha "VTN 2025 v3"
+//    (decomposição por categoria, VTN unitário buscado na Receita Federal).
+//  - "manual": o VTN/ha é informado diretamente pelo operador; usado quando
+//    o valor de mercado já é conhecido e não se quer decompor por categoria.
 // =====================================================================
-function calcularVTN({ areaTotal, aptidao, areas, vtnRow, vtnHaAnterior }) {
+function calcularVTN({ modo, areaTotal, aptidao, areas, vtnRow, vtnHaAnterior, vtnManual, areaNaoTributavelManual }) {
+  const areaTotalNum = Number(areaTotal) || 0;
+  const inconsistencias = [];
+
+  if (modo === 'manual') {
+    const vtnPorHa = Number(vtnManual) || 0;
+    const areaNaoTrib = Number(areaNaoTributavelManual) || 0;
+    const vtnTotal = areaTotalNum * vtnPorHa;
+    const areaTributavel = round1(areaTotalNum - areaNaoTrib);
+    const coeficiente = areaTotalNum > 0 ? truncate(areaTributavel / areaTotalNum, 4) : 0;
+    const vtnTributavel = vtnTotal * coeficiente;
+    const faixaAliquota = getAliquota(areaTotalNum);
+    const imposto = vtnTributavel * faixaAliquota.aliquota;
+
+    const anteriorNum = Number(vtnHaAnterior);
+    const diferencaPct = anteriorNum > 0 ? (vtnPorHa / anteriorNum) * 100 - 100 : null;
+
+    if (areaTotalNum <= 0) inconsistencias.push('Informe a área total do imóvel (maior que zero).');
+    if (vtnPorHa <= 0) inconsistencias.push('Informe o VTN por hectare do imóvel (maior que zero).');
+    if (areaNaoTrib > areaTotalNum) inconsistencias.push('Erro: a área não tributável ultrapassa a área total do imóvel.');
+
+    return {
+      itens: [], somaAreas: 0, saldo: 0, vtnTotal, vtnPorHa, diferencaPct,
+      areaAmbiental: areaNaoTrib, areaTributavel, coeficiente, faixaAliquota, imposto,
+      inconsistencias, areaTotalNum,
+    };
+  }
+
+  // modo === 'automatico'
   const itens = CATEGORIAS.map((cat) => {
     const area = Number(areas[cat.key]) || 0;
     const idx = getVtnFieldIndex(cat.key, aptidao);
@@ -102,7 +137,6 @@ function calcularVTN({ areaTotal, aptidao, areas, vtnRow, vtnHaAnterior }) {
   });
 
   const somaAreas = round1(itens.reduce((s, i) => s + i.area, 0));
-  const areaTotalNum = Number(areaTotal) || 0;
   const saldo = round1(areaTotalNum - somaAreas);
 
   const temIndisponivel = itens.some((i) => i.indisponivel);
@@ -119,7 +153,6 @@ function calcularVTN({ areaTotal, aptidao, areas, vtnRow, vtnHaAnterior }) {
   const faixaAliquota = getAliquota(areaTotalNum);
   const imposto = vtnTributavel * faixaAliquota.aliquota;
 
-  const inconsistencias = [];
   if (areaTotalNum <= 0) inconsistencias.push('Informe a área total do imóvel (maior que zero).');
   if (saldo > 0.05) inconsistencias.push(`Existem ${formatHA(saldo)} ainda não classificados.`);
   if (saldo < -0.05) inconsistencias.push('Erro: a soma das áreas informadas ultrapassa a área total do imóvel.');
@@ -169,6 +202,9 @@ export default function CalculadoraVTN() {
     lavoura: '', pastagemPlantada: '', pastagemNativa: '',
     reflorestamento: '', ambiental: '', benfeitorias: '', imprestavel: '',
   });
+  const [modo, setModo] = useState('automatico'); // 'automatico' | 'manual'
+  const [vtnManual, setVtnManual] = useState('');
+  const [areaNaoTributavelManual, setAreaNaoTributavelManual] = useState('');
   const [memoriaAberta, setMemoriaAberta] = useState(true);
   const [copiado, setCopiado] = useState(false);
 
@@ -184,17 +220,19 @@ export default function CalculadoraVTN() {
     return VTN_DATA_2026.find((r) => r[0] === uf && r[1] === municipio) || null;
   }, [uf, municipio]);
 
-  const resultado = useMemo(() => calcularVTN({ areaTotal, aptidao, areas, vtnRow, vtnHaAnterior }),
-    [areaTotal, aptidao, areas, vtnRow, vtnHaAnterior]);
+  const resultado = useMemo(() => calcularVTN({
+    modo, areaTotal, aptidao, areas, vtnRow, vtnHaAnterior, vtnManual, areaNaoTributavelManual,
+  }), [modo, areaTotal, aptidao, areas, vtnRow, vtnHaAnterior, vtnManual, areaNaoTributavelManual]);
 
   function handleAreaChange(key, value) {
     setAreas((prev) => ({ ...prev, [key]: value }));
   }
 
   function handleCopiar() {
-    const linhas = resultado.itens
-      .filter((i) => i.area > 0)
-      .map((i) => `${i.label}: ${formatHA(i.area)} × ${i.vtnUnitario != null ? formatBRL(i.vtnUnitario) : 'indisponível'}/ha = ${formatBRL(i.vtnParcial)}`);
+    const linhas = modo === 'automatico'
+      ? resultado.itens.filter((i) => i.area > 0)
+        .map((i) => `${i.label}: ${formatHA(i.area)} × ${i.vtnUnitario != null ? formatBRL(i.vtnUnitario) : 'indisponível'}/ha = ${formatBRL(i.vtnParcial)}`)
+      : [`VTN informado manualmente: ${formatBRL(resultado.vtnPorHa)}/ha`];
     const texto = [
       `Calculadora de VTN — ${municipio || '(município)'}/${uf || '--'} — Exercício 2026`,
       `Área total: ${formatHA(resultado.areaTotalNum)}`,
@@ -210,14 +248,20 @@ export default function CalculadoraVTN() {
     setTimeout(() => setCopiado(false), 2000);
   }
 
-  const bloqueado = resultado.saldo < -0.05;
+  const bloqueado = resultado.inconsistencias.some((m) => m.startsWith('Erro'));
 
   return (
-    <div className="min-h-screen w-full" style={{ background: C.bg, color: C.ink }}>
+    <div className="vtn-app min-h-screen w-full" style={{ background: C.bg, color: C.ink }}>
       <style>{`
-        .vtn-serif { font-family: Georgia, 'Times New Roman', serif; }
+        @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&display=swap');
+        .vtn-app, .vtn-app * { font-family: 'Poppins', system-ui, sans-serif; }
         .vtn-mono { font-variant-numeric: tabular-nums; }
-        input[type=number]::-webkit-inner-spin-button { opacity: 1; }
+        .vtn-app input[type=number] { -moz-appearance: textfield; }
+        .vtn-app input[type=number]::-webkit-outer-spin-button,
+        .vtn-app input[type=number]::-webkit-inner-spin-button {
+          -webkit-appearance: none;
+          margin: 0;
+        }
       `}</style>
 
       {/* Cabeçalho */}
@@ -228,7 +272,7 @@ export default function CalculadoraVTN() {
           </div>
           <div>
             <p className="text-xs tracking-widest uppercase font-semibold" style={{ color: C.forest }}>Gestão Fundiária · Safras &amp; Cifras</p>
-            <h1 className="vtn-serif text-2xl md:text-3xl font-bold leading-tight" style={{ color: C.forestDark }}>Calculadora de VTN Ponderado</h1>
+            <h1 className="text-2xl md:text-3xl font-extrabold leading-tight" style={{ color: C.forestDark }}>Calculadora de VTN Ponderado</h1>
           </div>
         </div>
       </header>
@@ -282,16 +326,38 @@ export default function CalculadoraVTN() {
                 <span>Não há registro de VTN para este município no exercício 2026. Não é possível calcular.</span>
               </div>
             )}
-
-            {vtnRow && (
-              <div className="mt-3 flex items-start gap-2 text-xs rounded-lg px-3 py-2" style={{ background: C.forestSoft, color: C.inkSoft }}>
-                <Info size={14} className="flex-shrink-0 mt-0.5" />
-                <span>Fonte dos valores: {vtnRow[8] === 1 ? 'município' : 'órgão estadual'} · Tabela oficial da Receita Federal, Exercício 2026.</span>
-              </div>
-            )}
           </div>
 
-          {/* Área total e aptidão */}
+          {/* Quadro de valores de pauta do município selecionado */}
+          {vtnRow && (
+            <div className="rounded-2xl p-5 shadow-sm" style={{ background: C.forestSoft, border: `1px solid ${C.forest}` }}>
+              <div className="flex items-center gap-2 mb-3">
+                <Table2 size={18} color={C.forestDark} />
+                <h2 className="font-semibold text-base" style={{ color: C.forestDark }}>
+                  Valores de pauta — {municipio}/{uf}
+                </h2>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                {CAMPOS_PAUTA.map((idx) => {
+                  const valor = vtnRow[idx];
+                  return (
+                    <div key={idx} className="rounded-lg px-3 py-2" style={{ background: '#fff', border: `1px solid ${C.line}` }}>
+                      <p className="text-xs leading-tight" style={{ color: C.inkSoft }}>{NOME_CAMPO_VTN[idx]}</p>
+                      <p className="text-sm font-bold vtn-mono" style={{ color: valor != null ? C.forestDark : C.danger }}>
+                        {valor != null ? formatBRL(valor) + '/ha' : 'indisponível'}
+                      </p>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="mt-3 flex items-start gap-2 text-xs" style={{ color: C.inkSoft }}>
+                <Info size={14} className="flex-shrink-0 mt-0.5" />
+                <span>Fonte: {vtnRow[8] === 1 ? 'município' : 'órgão estadual'} · Tabela oficial da Receita Federal, Exercício 2026.</span>
+              </div>
+            </div>
+          )}
+
+          {/* Área total, aptidão e escolha do modo de cálculo */}
           <div className="rounded-2xl p-5 shadow-sm" style={{ background: C.paper, border: `1px solid ${C.line}` }}>
             <div className="flex items-center gap-2 mb-4">
               <Leaf size={18} color={C.forest} />
@@ -323,101 +389,179 @@ export default function CalculadoraVTN() {
               </div>
             </div>
 
-            <div>
-              <label className="block text-xs font-medium mb-2" style={{ color: C.inkSoft }}>Aptidão da lavoura</label>
-              <div className="flex gap-2">
-                {['BOA', 'REGULAR', 'RESTRITA'].map((op) => (
-                  <button
-                    key={op}
-                    type="button"
-                    onClick={() => setAptidao(op)}
-                    className="px-3 py-1.5 rounded-full text-xs font-semibold transition-colors"
-                    style={aptidao === op
-                      ? { background: C.forest, color: '#fff' }
-                      : { background: '#fff', color: C.inkSoft, border: `1px solid ${C.line}` }}
-                  >
-                    {op.charAt(0) + op.slice(1).toLowerCase()}
-                  </button>
-                ))}
+            {/* Seletor de modo de cálculo do VTN */}
+            <div className="mb-1">
+              <label className="block text-xs font-medium mb-2" style={{ color: C.inkSoft }}>Como calcular o VTN deste imóvel?</label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button" onClick={() => setModo('automatico')}
+                  className="flex items-center justify-center gap-2 rounded-lg py-2 text-xs font-semibold transition-colors"
+                  style={modo === 'automatico'
+                    ? { background: C.forest, color: '#fff' }
+                    : { background: '#fff', color: C.inkSoft, border: `1px solid ${C.line}` }}
+                >
+                  <Calculator size={14} /> Por composição de área
+                </button>
+                <button
+                  type="button" onClick={() => setModo('manual')}
+                  className="flex items-center justify-center gap-2 rounded-lg py-2 text-xs font-semibold transition-colors"
+                  style={modo === 'manual'
+                    ? { background: C.forest, color: '#fff' }
+                    : { background: '#fff', color: C.inkSoft, border: `1px solid ${C.line}` }}
+                >
+                  <PenLine size={14} /> Informar VTN manualmente
+                </button>
               </div>
             </div>
           </div>
 
-          {/* Composição de área por categoria */}
-          <div className="rounded-2xl p-5 shadow-sm" style={{ background: C.paper, border: `1px solid ${C.line}` }}>
-            <div className="flex items-center gap-2 mb-1">
-              <Calculator size={18} color={C.forest} />
-              <h2 className="font-semibold text-base">Composição da área por categoria</h2>
-            </div>
-            <p className="text-xs mb-4" style={{ color: C.inkSoft }}>O valor de VTN unitário é buscado automaticamente na tabela da Receita Federal para o município selecionado.</p>
+          {modo === 'automatico' ? (
+            <>
+              {/* Aptidão da lavoura (só relevante no modo automático) */}
+              <div className="rounded-2xl p-5 shadow-sm" style={{ background: C.paper, border: `1px solid ${C.line}` }}>
+                <label className="block text-xs font-medium mb-2" style={{ color: C.inkSoft }}>Aptidão da lavoura</label>
+                <div className="flex gap-2">
+                  {['BOA', 'REGULAR', 'RESTRITA'].map((op) => (
+                    <button
+                      key={op}
+                      type="button"
+                      onClick={() => setAptidao(op)}
+                      className="px-3 py-1.5 rounded-full text-xs font-semibold transition-colors"
+                      style={aptidao === op
+                        ? { background: C.forest, color: '#fff' }
+                        : { background: '#fff', color: C.inkSoft, border: `1px solid ${C.line}` }}
+                    >
+                      {op.charAt(0) + op.slice(1).toLowerCase()}
+                    </button>
+                  ))}
+                </div>
+              </div>
 
-            <div className="overflow-x-auto -mx-2">
-              <table className="w-full text-sm min-w-[560px]">
-                <thead>
-                  <tr className="text-left" style={{ color: C.inkSoft }}>
-                    <th className="px-2 pb-2 font-medium">Categoria</th>
-                    <th className="px-2 pb-2 font-medium">Área (ha)</th>
-                    <th className="px-2 pb-2 font-medium">%</th>
-                    <th className="px-2 pb-2 font-medium">VTN unitário</th>
-                    <th className="px-2 pb-2 font-medium text-right">VTN ponderado</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {resultado.itens.map((item) => {
-                    const pct = resultado.areaTotalNum > 0 ? (item.area / resultado.areaTotalNum) * 100 : 0;
-                    return (
-                      <tr key={item.key} className="border-t" style={{ borderColor: C.line }}>
-                        <td className="px-2 py-2 align-top">
-                          <div className="font-medium">{item.label}</div>
-                          {item.usaAptidao && <div className="text-xs" style={{ color: C.inkSoft }}>aptidão: {aptidao.toLowerCase()}</div>}
-                        </td>
-                        <td className="px-2 py-2 align-top">
-                          <input
-                            type="number" min="0" step="0.1" inputMode="decimal"
-                            className="w-24 rounded-md px-2 py-1 text-sm outline-none vtn-mono"
-                            style={{ border: `1px solid ${C.line}` }}
-                            placeholder="0,0"
-                            value={areas[item.key]}
-                            onChange={(e) => handleAreaChange(item.key, e.target.value)}
-                          />
-                        </td>
-                        <td className="px-2 py-2 align-top vtn-mono" style={{ color: C.inkSoft }}>{formatPct1(pct)}</td>
-                        <td className="px-2 py-2 align-top vtn-mono">
-                          {!vtnRow ? '—' : item.vtnUnitario != null ? formatBRL(item.vtnUnitario) + '/ha' : (
-                            <span style={{ color: C.danger }}>indisponível</span>
-                          )}
-                        </td>
-                        <td className="px-2 py-2 align-top text-right vtn-mono font-medium">{formatBRL(item.vtnParcial)}</td>
+              {/* Composição de área por categoria */}
+              <div className="rounded-2xl p-5 shadow-sm" style={{ background: C.paper, border: `1px solid ${C.line}` }}>
+                <div className="flex items-center gap-2 mb-1">
+                  <Calculator size={18} color={C.forest} />
+                  <h2 className="font-semibold text-base">Composição da área por categoria</h2>
+                </div>
+                <p className="text-xs mb-4" style={{ color: C.inkSoft }}>O valor de VTN unitário é buscado automaticamente na tabela da Receita Federal para o município selecionado.</p>
+
+                <div className="overflow-x-auto -mx-2">
+                  <table className="w-full text-sm min-w-[560px]">
+                    <thead>
+                      <tr className="text-left" style={{ color: C.inkSoft }}>
+                        <th className="px-2 pb-2 font-medium">Categoria</th>
+                        <th className="px-2 pb-2 font-medium">Área (ha)</th>
+                        <th className="px-2 pb-2 font-medium">%</th>
+                        <th className="px-2 pb-2 font-medium">VTN unitário</th>
+                        <th className="px-2 pb-2 font-medium text-right">VTN ponderado</th>
                       </tr>
-                    );
-                  })}
-                </tbody>
-                <tfoot>
-                  <tr className="border-t-2" style={{ borderColor: C.forest }}>
-                    <td className="px-2 pt-2 font-semibold">Total</td>
-                    <td className="px-2 pt-2 font-semibold vtn-mono">{formatHA(resultado.somaAreas)}</td>
-                    <td></td>
-                    <td></td>
-                    <td className="px-2 pt-2 text-right font-semibold vtn-mono">{formatBRL(resultado.vtnTotal)}</td>
-                  </tr>
-                </tfoot>
-              </table>
-            </div>
+                    </thead>
+                    <tbody>
+                      {resultado.itens.map((item) => {
+                        const pct = resultado.areaTotalNum > 0 ? (item.area / resultado.areaTotalNum) * 100 : 0;
+                        return (
+                          <tr key={item.key} className="border-t" style={{ borderColor: C.line }}>
+                            <td className="px-2 py-2 align-top">
+                              <div className="font-medium">{item.label}</div>
+                              {item.usaAptidao && <div className="text-xs" style={{ color: C.inkSoft }}>aptidão: {aptidao.toLowerCase()}</div>}
+                            </td>
+                            <td className="px-2 py-2 align-top">
+                              <input
+                                type="number" min="0" step="0.1" inputMode="decimal"
+                                className="w-24 rounded-md px-2 py-1 text-sm outline-none vtn-mono"
+                                style={{ border: `1px solid ${C.line}` }}
+                                placeholder="0,0"
+                                value={areas[item.key]}
+                                onChange={(e) => handleAreaChange(item.key, e.target.value)}
+                              />
+                            </td>
+                            <td className="px-2 py-2 align-top vtn-mono" style={{ color: C.inkSoft }}>{formatPct1(pct)}</td>
+                            <td className="px-2 py-2 align-top vtn-mono">
+                              {!vtnRow ? '—' : item.vtnUnitario != null ? formatBRL(item.vtnUnitario) + '/ha' : (
+                                <span style={{ color: C.danger }}>indisponível</span>
+                              )}
+                            </td>
+                            <td className="px-2 py-2 align-top text-right vtn-mono font-medium">{formatBRL(item.vtnParcial)}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                    <tfoot>
+                      <tr className="border-t-2" style={{ borderColor: C.forest }}>
+                        <td className="px-2 pt-2 font-semibold">Total</td>
+                        <td className="px-2 pt-2 font-semibold vtn-mono">{formatHA(resultado.somaAreas)}</td>
+                        <td></td>
+                        <td></td>
+                        <td className="px-2 pt-2 text-right font-semibold vtn-mono">{formatBRL(resultado.vtnTotal)}</td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
 
-            {resultado.inconsistencias.length > 0 && (
-              <div className="mt-4 space-y-2">
-                {resultado.inconsistencias.map((msg, i) => (
-                  <div key={i} className="flex items-start gap-2 text-sm rounded-lg px-3 py-2"
-                    style={msg.startsWith('Erro')
-                      ? { background: C.dangerSoft, color: C.danger }
-                      : { background: C.wheatSoft, color: '#7A5A18' }}>
-                    <AlertTriangle size={16} className="flex-shrink-0 mt-0.5" />
-                    <span>{msg}</span>
+                {resultado.inconsistencias.length > 0 && (
+                  <div className="mt-4 space-y-2">
+                    {resultado.inconsistencias.map((msg, i) => (
+                      <div key={i} className="flex items-start gap-2 text-sm rounded-lg px-3 py-2"
+                        style={msg.startsWith('Erro')
+                          ? { background: C.dangerSoft, color: C.danger }
+                          : { background: C.wheatSoft, color: '#7A5A18' }}>
+                        <AlertTriangle size={16} className="flex-shrink-0 mt-0.5" />
+                        <span>{msg}</span>
+                      </div>
+                    ))}
                   </div>
-                ))}
+                )}
               </div>
-            )}
-          </div>
+            </>
+          ) : (
+            /* Modo manual: informar VTN diretamente */
+            <div className="rounded-2xl p-5 shadow-sm" style={{ background: C.paper, border: `1px solid ${C.line}` }}>
+              <div className="flex items-center gap-2 mb-1">
+                <PenLine size={18} color={C.forest} />
+                <h2 className="font-semibold text-base">VTN informado manualmente</h2>
+              </div>
+              <p className="text-xs mb-4" style={{ color: C.inkSoft }}>Use este modo quando o VTN/ha do imóvel já for conhecido e não for necessário decompor por categoria de uso.</p>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-medium mb-1" style={{ color: C.inkSoft }}>VTN por hectare (R$)</label>
+                  <input
+                    type="number" min="0" step="0.01" inputMode="decimal"
+                    className="w-full rounded-lg px-3 py-2 text-sm outline-none vtn-mono"
+                    style={{ border: `1px solid ${C.line}` }}
+                    placeholder="R$ 0,00"
+                    value={vtnManual}
+                    onChange={(e) => setVtnManual(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium mb-1" style={{ color: C.inkSoft }}>Área não tributável (ha)<br /><span className="font-normal">APP, Reserva Legal, etc.</span></label>
+                  <input
+                    type="number" min="0" step="0.1" inputMode="decimal"
+                    className="w-full rounded-lg px-3 py-2 text-sm outline-none vtn-mono"
+                    style={{ border: `1px solid ${C.line}` }}
+                    placeholder="0,0"
+                    value={areaNaoTributavelManual}
+                    onChange={(e) => setAreaNaoTributavelManual(e.target.value)}
+                  />
+                </div>
+              </div>
+
+              {resultado.inconsistencias.length > 0 && (
+                <div className="mt-4 space-y-2">
+                  {resultado.inconsistencias.map((msg, i) => (
+                    <div key={i} className="flex items-start gap-2 text-sm rounded-lg px-3 py-2"
+                      style={msg.startsWith('Erro')
+                        ? { background: C.dangerSoft, color: C.danger }
+                        : { background: C.wheatSoft, color: '#7A5A18' }}>
+                      <AlertTriangle size={16} className="flex-shrink-0 mt-0.5" />
+                      <span>{msg}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </section>
 
         {/* ============ COLUNA DIREITA: RESULTADO ============ */}
@@ -426,7 +570,7 @@ export default function CalculadoraVTN() {
 
             <div className="rounded-2xl p-6 shadow-md" style={{ background: C.forestDark, color: '#fff' }}>
               <p className="text-xs uppercase tracking-widest font-semibold opacity-80">Imposto (ITR) estimado</p>
-              <p className="vtn-serif vtn-mono text-4xl font-bold mt-1 mb-4">
+              <p className="vtn-mono text-4xl font-extrabold mt-1 mb-4">
                 {bloqueado ? '—' : formatBRL(resultado.imposto)}
               </p>
 
@@ -493,18 +637,28 @@ export default function CalculadoraVTN() {
               {memoriaAberta && (
                 <div className="px-5 pb-5 text-xs space-y-3 vtn-mono" style={{ color: C.inkSoft }}>
                   <p className="font-sans" style={{ color: C.ink }}>Área total: <strong>{formatHA(resultado.areaTotalNum)}</strong></p>
-                  {resultado.itens.filter((i) => i.area > 0).map((i) => (
-                    <div key={i.key} className="border-t pt-2" style={{ borderColor: C.line }}>
-                      <p className="font-sans font-medium" style={{ color: C.ink }}>{i.label}</p>
-                      <p>Área: {formatHA(i.area)} · Participação: {formatPct1(resultado.areaTotalNum > 0 ? (i.area / resultado.areaTotalNum) * 100 : 0)}</p>
-                      <p>VTN unitário ({i.nomeCampoVtn}): {i.vtnUnitario != null ? formatBRL(i.vtnUnitario) + '/ha' : 'indisponível'}</p>
-                      <p className="font-sans font-medium" style={{ color: C.forestDark }}>Contribuição: {formatBRL(i.vtnParcial)}</p>
+
+                  {modo === 'automatico' ? (
+                    resultado.itens.filter((i) => i.area > 0).map((i) => (
+                      <div key={i.key} className="border-t pt-2" style={{ borderColor: C.line }}>
+                        <p className="font-sans font-medium" style={{ color: C.ink }}>{i.label}</p>
+                        <p>Área: {formatHA(i.area)} · Participação: {formatPct1(resultado.areaTotalNum > 0 ? (i.area / resultado.areaTotalNum) * 100 : 0)}</p>
+                        <p>VTN unitário ({i.nomeCampoVtn}): {i.vtnUnitario != null ? formatBRL(i.vtnUnitario) + '/ha' : 'indisponível'}</p>
+                        <p className="font-sans font-medium" style={{ color: C.forestDark }}>Contribuição: {formatBRL(i.vtnParcial)}</p>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="border-t pt-2" style={{ borderColor: C.line }}>
+                      <p className="font-sans font-medium" style={{ color: C.ink }}>VTN informado manualmente</p>
+                      <p>VTN/ha: {formatBRL(resultado.vtnPorHa)}</p>
+                      <p>Área não tributável: {formatHA(resultado.areaAmbiental)}</p>
                     </div>
-                  ))}
+                  )}
+
                   <div className="border-t pt-2" style={{ borderColor: C.forest }}>
                     <p className="font-sans" style={{ color: C.ink }}>VTN Total = {formatBRL(resultado.vtnTotal)}</p>
                     <p className="font-sans" style={{ color: C.ink }}>VTN Ponderado = VTN Total ÷ Área Total = {formatBRL(resultado.vtnPorHa)}/ha</p>
-                    <p className="font-sans mt-2" style={{ color: C.ink }}>Área Tributável = Área Total − Área Ambiental = {formatHA(resultado.areaTributavel)}</p>
+                    <p className="font-sans mt-2" style={{ color: C.ink }}>Área Tributável = Área Total − Área {modo === 'automatico' ? 'Ambiental' : 'Não Tributável'} = {formatHA(resultado.areaTributavel)}</p>
                     <p className="font-sans" style={{ color: C.ink }}>Coeficiente = TRUNC(Área Tributável ÷ Área Total, 4) = {resultado.coeficiente}</p>
                     <p className="font-sans" style={{ color: C.ink }}>VTN Tributável = VTN Total × Coeficiente = {formatBRL(resultado.vtnTotal * resultado.coeficiente)}</p>
                     <p className="font-sans" style={{ color: C.ink }}>Alíquota (GU&gt;80%, {resultado.faixaAliquota.label}) = {formatPct2(resultado.faixaAliquota.aliquota * 100)}</p>
