@@ -5,9 +5,8 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
 // =====================================================================
 // Extrai o texto de um PDF preservando a estrutura visual de linhas e
-// colunas (equivalente a `pdftotext -layout`), agrupando os itens de
-// texto por proximidade vertical (Y) e ordenando por posição horizontal
-// (X) dentro de cada linha.
+// colunas, agrupando os itens de texto por proximidade vertical (Y) e
+// ordenando por posição horizontal (X) dentro de cada linha.
 // =====================================================================
 export async function extractLinesFromPdf(arrayBuffer) {
   const doc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
@@ -41,25 +40,8 @@ export async function extractLinesFromPdf(arrayBuffer) {
 }
 
 // =====================================================================
-// PARSER da Declaração do ITR (DIAC + DIAT) — formato oficial da Receita
-// Federal gerado pelo Programa ITR/PGD. Testado e validado campo a campo
-// contra declaração real.
+// Utilitários de conversão de valores (comuns aos dois formatos)
 // =====================================================================
-function linesEqual(items, labels) {
-  if (items.length !== labels.length) return false;
-  return items.every((t, i) => t.trim() === labels[i]);
-}
-
-function findValueAfter(lines, labels, opts = {}) {
-  const { fromIndex = 0, toIndex = lines.length } = opts;
-  for (let i = fromIndex; i < toIndex - 1; i++) {
-    if (linesEqual(lines[i].texts, labels)) {
-      return lines[i + 1].texts;
-    }
-  }
-  return null;
-}
-
 function parseArea(str) {
   if (str == null) return null;
   const s = String(str).trim();
@@ -85,7 +67,31 @@ function parsePct(str) {
   return Number.isNaN(v) ? null : v;
 }
 
-export function parseDeclaracaoITR(lines) {
+function linesEqual(items, labels) {
+  if (items.length !== labels.length) return false;
+  return items.every((t, i) => t.trim() === labels[i]);
+}
+
+function findValueAfter(lines, labels, opts = {}) {
+  const { fromIndex = 0, toIndex = lines.length } = opts;
+  for (let i = fromIndex; i < toIndex - 1; i++) {
+    if (linesEqual(lines[i].texts, labels)) {
+      return lines[i + 1].texts;
+    }
+  }
+  return null;
+}
+
+// =====================================================================
+// FORMATO A — declaração no layout "Receita Federal / Receitanet" (a
+// mesma sequência de páginas DIAC → DIAT, rótulos em frase corrida sem
+// numeração). Ex.: "Área Total do Imóvel", "Preservação permanente".
+// =====================================================================
+function detectaFormatoA(lines) {
+  return lines.some((l) => l.texts.length === 1 && /^Identificação CIB:/.test(l.texts[0]));
+}
+
+function parseFormatoA(lines) {
   const idxContribuinte = lines.findIndex((l) => linesEqual(l.texts, ['Identificação do Contribuinte']));
 
   const cibLine = lines.find((l) => l.texts.length === 1 && /^Identificação CIB:/.test(l.texts[0]));
@@ -153,6 +159,7 @@ export function parseDeclaracaoITR(lines) {
     getRow(['Pastagem nativa', 'Pastagem plantada', 'Forrageira de corte']);
 
   return {
+    formato: 'A',
     cib, nomeImovel, exercicio, municipio, uf,
     areaTotalImovel: parseArea(areaTotalImovel),
     preservacaoPermanente: parseArea(preservacaoPermanente),
@@ -197,6 +204,156 @@ export function parseDeclaracaoITR(lines) {
 }
 
 // =====================================================================
+// FORMATO B — declaração impressa pelo "MIDAS / Módulo de Impressão de
+// Declarações" (Programa ITR desktop). Traz uma folha de rosto extra no
+// início (deslocando DIAC/DIAT uma página adiante) e usa rótulos
+// numerados ("01. Área Total do Imóvel", "02. Área de Preservação
+// Permanente" etc.), com rótulo e valor na MESMA linha.
+// =====================================================================
+function detectaFormatoB(lines) {
+  return lines.some((l) => l.texts.length === 1 && l.texts[0] === 'FOLHA DE ROSTO')
+    || lines.some((l) => l.texts[0] && /^IDENTIFICAÇÃO CIB:/.test(l.texts[0]));
+}
+
+function parseFormatoB(lines) {
+  const idxContribuinte = lines.findIndex((l) => l.texts.length === 1 && l.texts[0] === 'IDENTIFICAÇÃO DO CONTRIBUINTE');
+
+  const cibLine = lines.find((l) => l.texts[0] && /^IDENTIFICAÇÃO CIB:/.test(l.texts[0]));
+  const cib = cibLine ? cibLine.texts[1] : null;
+
+  const nomeLine = lines.find((l) => l.texts[0] === 'NOME DO IMÓVEL RURAL:');
+  const nomeImovel = nomeLine ? nomeLine.texts[1] : null;
+
+  const exercicioLine = lines.find((l) => l.texts[0] === 'Exercício:');
+  const exercicio = exercicioLine ? Number(exercicioLine.texts[1]) : null;
+
+  // Município/UF do imóvel — primeira ocorrência de "UF:"/"Município:" antes
+  // da seção "IDENTIFICAÇÃO DO CONTRIBUINTE" (que repete o mesmo padrão para
+  // o endereço do declarante).
+  const munUfLine = lines.find((l, i) =>
+    l.texts[0] === 'UF:' && l.texts[2] === 'Município:'
+    && (idxContribuinte === -1 || i < idxContribuinte));
+  const uf = munUfLine ? munUfLine.texts[1] : null;
+  const municipio = munUfLine ? munUfLine.texts[3] : null;
+
+  // Campos numerados: rótulo e valor na mesma linha (texts[0] = rótulo
+  // completo incluindo o número, texts[1] = valor).
+  const get1 = (labelExato) => {
+    const l = lines.find((ln) => ln.texts[0] === labelExato);
+    return l ? l.texts[1] : null;
+  };
+  // Alguns rótulos têm o número variável de posição (ex.: "Número do
+  // Recibo do ADA 2025/Ibama" muda o ano) — busca por prefixo com regex.
+  const get1Regex = (regex) => {
+    const l = lines.find((ln) => ln.texts[0] && regex.test(ln.texts[0]));
+    return l ? l.texts[1] : null;
+  };
+
+  const areaTotalImovel = get1('01. Área Total do Imóvel');
+  const preservacaoPermanente = get1('02. Área de Preservação Permanente');
+  const reservaLegal = get1('03. Área de Reserva Legal');
+  const reservaParticular = get1('04. Área de Reserva Particular do Patrimônio Natural (RPPN)');
+  const interesseEcologico = get1('05. Área de Interesse Ecológico');
+  const servidaoAmbiental = get1('06. Área de Servidão Ambiental');
+  const florestasNativas = get1('07. Área Coberta por Florestas Nativas');
+  const areaAlagadaReservatorio = get1('08. Área Alagada de Reservatório de Usinas Hidrelétricas Autorizada pelo Poder Público');
+  const areaTributavel = get1('09. Área Tributável');
+  const benfeitoriasUteis = get1('10. Área Ocupada com Benfeitorias Úteis e Necessárias Destinadas à Atividade Rural');
+  const areaAproveitavel = get1('11. Área Aproveitável');
+
+  const produtosVegetais = get1('12. Área de Produtos Vegetais');
+  const areaEmDescanso = get1('13. Área em Descanso');
+  const reflorestamento = get1('14. Área de Reflorestamento (Essências Exóticas ou Nativas)');
+  const pastagemTotal = get1('15. Área de Pastagem');
+  const exploracaoExtrativa = get1('16. Área de Exploração Extrativa');
+  const atividadeGranjeira = get1('17. Área de Atividade Granjeira ou Aquícola');
+  const frustracaoSafra = get1('18. Área de Frustração de Safra ou Destruição de Pastagem por Calamidade Pública');
+
+  const grauUtilizacao = get1('20. GRAU DE UTILIZAÇÃO (%)');
+
+  const numeroADA = get1Regex(/^Número do Recibo do ADA \d{4}\/Ibama$/);
+  const numeroCAR = get1('Número do CAR');
+
+  const demaisBenfeitorias = get1('21. Área com Demais Benfeitorias');
+  const areaMineracao = get1('22. Área com Mineração (jazida/mina)');
+  const areaImprestavel = get1('23. Área Imprestável para a Atividade Rural Não Declarada de Interesse Ecológico');
+  const areaInexplorada = get1('24. Área Inexplorada');
+  const outrasAreas = get1('25. Outras Áreas');
+
+  const valorTotalImovel = get1('01. Valor Total do Imóvel');
+  const valorConstrucoes = get1('02. Valor das Construções, Instalações e Benfeitorias');
+  const valorCulturasPastagens = get1('03. Valor das Culturas, Pastagens Cultivadas e Melhoradas e Florestas Plantadas');
+  const valorTerraNua = get1('04. Valor da Terra Nua');
+  const valorTerraNuaTributavel = get1('05. Valor da Terra Nua Tributável');
+  const aliquotaDeclarada = get1('06. Alíquota (%)');
+  const impostoCalculado = get1('07. Imposto Calculado');
+  const impostoDevido = get1('08. Imposto Devido');
+
+  const pastagemNativaLbl = get1('04. Pastagem Nativa');
+  const pastagemPlantadaLbl = get1('05. Pastagem Plantada');
+  const forrageiraCorte = get1('06. Forrageira de Corte');
+
+  return {
+    formato: 'B',
+    cib, nomeImovel, exercicio, municipio, uf,
+    areaTotalImovel: parseArea(areaTotalImovel),
+    preservacaoPermanente: parseArea(preservacaoPermanente),
+    reservaLegal: parseArea(reservaLegal),
+    reservaParticular: parseArea(reservaParticular),
+    interesseEcologico: parseArea(interesseEcologico),
+    servidaoAmbiental: parseArea(servidaoAmbiental),
+    florestasNativas: parseArea(florestasNativas),
+    areaAlagadaReservatorio: parseArea(areaAlagadaReservatorio),
+    areaTributavel: parseArea(areaTributavel),
+    benfeitoriasUteis: parseArea(benfeitoriasUteis),
+    areaAproveitavel: parseArea(areaAproveitavel),
+    produtosVegetais: parseArea(produtosVegetais),
+    areaEmDescanso: parseArea(areaEmDescanso),
+    reflorestamento: parseArea(reflorestamento),
+    pastagemTotal: parseArea(pastagemTotal),
+    exploracaoExtrativa: parseArea(exploracaoExtrativa),
+    atividadeGranjeira: parseArea(atividadeGranjeira),
+    frustracaoSafra: parseArea(frustracaoSafra),
+    grauUtilizacao: parsePct(grauUtilizacao),
+    numeroCAR: numeroCAR && numeroCAR !== '-' ? numeroCAR : null,
+    numeroADA: numeroADA && numeroADA !== '-' ? numeroADA : null,
+    demaisBenfeitorias: parseArea(demaisBenfeitorias),
+    areaMineracao: parseArea(areaMineracao),
+    areaImprestavel: parseArea(areaImprestavel),
+    areaInexplorada: parseArea(areaInexplorada),
+    outrasAreas: parseArea(outrasAreas),
+    pastagemNativa: parseArea(pastagemNativaLbl),
+    pastagemPlantada: parseArea(pastagemPlantadaLbl),
+    forrageiraCorte: parseArea(forrageiraCorte),
+    declarado: {
+      valorTotalImovel: parseMoeda(valorTotalImovel),
+      valorConstrucoes: parseMoeda(valorConstrucoes),
+      valorCulturasPastagens: parseMoeda(valorCulturasPastagens),
+      valorTerraNua: parseMoeda(valorTerraNua),
+      valorTerraNuaTributavel: parseMoeda(valorTerraNuaTributavel),
+      aliquota: parsePct(aliquotaDeclarada),
+      impostoCalculado: parseMoeda(impostoCalculado),
+      impostoDevido: parseMoeda(impostoDevido),
+    },
+  };
+}
+
+// =====================================================================
+// PARSER PRINCIPAL — detecta automaticamente qual dos dois formatos
+// conhecidos foi enviado e delega para o parser correspondente. Se
+// nenhum dos dois padrões for reconhecido, retorna tudo em branco (o
+// chamador deve tratar isso como "arquivo não reconhecido", sem
+// inventar dados).
+// =====================================================================
+export function parseDeclaracaoITR(lines) {
+  if (detectaFormatoB(lines)) return parseFormatoB(lines);
+  if (detectaFormatoA(lines)) return parseFormatoA(lines);
+  // Formato desconhecido: tenta o Formato A como fallback (mais comum),
+  // mas os campos provavelmente virão vazios — o app trata isso como erro.
+  return parseFormatoA(lines);
+}
+
+// =====================================================================
 // Converte os campos brutos da declaração nas 7 categorias da nossa
 // calculadora. Áreas que não têm correspondência clara com nenhuma das
 // 7 categorias (ex.: "área em descanso", "exploração extrativa") são
@@ -219,9 +376,6 @@ export function mapCategoriasFromDeclaracao(d) {
   let pastagemPlantada = d.pastagemPlantada;
   let pastagemIndefinida = false;
   if (pastagemNativa == null && pastagemPlantada == null) {
-    // Declaração não trouxe a página de Atividade Pecuária (sem esse detalhamento).
-    // Não presumimos a divisão entre nativa/plantada — fica sinalizado para
-    // o operador completar manualmente.
     pastagemIndefinida = (d.pastagemTotal ?? 0) > 0;
     pastagemNativa = 0;
     pastagemPlantada = 0;
