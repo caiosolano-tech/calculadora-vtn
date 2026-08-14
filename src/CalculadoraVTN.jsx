@@ -193,7 +193,9 @@ export default function CalculadoraVTN() {
   const [tentouGerar, setTentouGerar] = useState(false);
   const [importando, setImportando] = useState(false);
   const [previewImportacao, setPreviewImportacao] = useState(null);
+  const [arrastandoArquivo, setArrastandoArquivo] = useState(false);
   const fileInputRef = useRef(null);
+  const dragCounter = useRef(0);
 
   const activeIndex = Math.max(0, imoveis.findIndex((im) => im.id === activeId));
   const imovel = imoveis[activeIndex] || imoveis[0];
@@ -246,8 +248,8 @@ export default function CalculadoraVTN() {
   const bloqueado = resultado.inconsistencias.some((m) => m.startsWith('Erro'));
   const identificacaoFaltando = tentouGerar && (!imovel.nomeImovel.trim() || !imovel.cib.trim());
 
-  async function handleArquivosSelecionados(e) {
-    const files = Array.from(e.target.files || []);
+  async function processarArquivos(fileList) {
+    const files = Array.from(fileList || []).filter((f) => f.type === 'application/pdf' || /\.pdf$/i.test(f.name));
     if (files.length === 0) return;
     setImportando(true);
     const resultados = [];
@@ -272,6 +274,39 @@ export default function CalculadoraVTN() {
     setPreviewImportacao(resultados);
     setImportando(false);
     if (fileInputRef.current) fileInputRef.current.value = '';
+  }
+
+  function handleArquivosSelecionados(e) {
+    processarArquivos(e.target.files);
+  }
+
+  function handleDragEnter(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer.types && e.dataTransfer.types.includes('Files')) {
+      dragCounter.current += 1;
+      setArrastandoArquivo(true);
+    }
+  }
+  function handleDragOver(e) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+  function handleDragLeave(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounter.current -= 1;
+    if (dragCounter.current <= 0) {
+      dragCounter.current = 0;
+      setArrastandoArquivo(false);
+    }
+  }
+  function handleDrop(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    dragCounter.current = 0;
+    setArrastandoArquivo(false);
+    processarArquivos(e.dataTransfer.files);
   }
 
   function alternarInclusaoPreview(idx) {
@@ -554,13 +589,14 @@ export default function CalculadoraVTN() {
         <div className="rounded-2xl p-4 shadow-sm mb-6" style={{ background: C.paper, border: `1px solid ${C.line}` }}>
           <div className="flex items-center justify-between mb-3">
             <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: C.inkSoft }}>Imóveis nesta sessão ({imoveis.length})</p>
-            <label className="flex items-center gap-1.5 text-xs font-semibold cursor-pointer" style={{ color: C.forest }}>
-              <UploadCloud size={14} />
-              Importar declarações de ITR (PDF)
-              <input ref={fileInputRef} type="file" accept="application/pdf" multiple className="hidden" onChange={handleArquivosSelecionados} />
-            </label>
+            <button type="button" onClick={handleNovoImovel}
+              className="flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-semibold"
+              style={{ background: '#fff', color: C.forest, border: `1px dashed ${C.forest}` }}
+            >
+              <Plus size={14} /> Novo imóvel
+            </button>
           </div>
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap gap-2 mb-4">
             {imoveis.map((im) => (
               <button
                 key={im.id}
@@ -576,14 +612,28 @@ export default function CalculadoraVTN() {
                 )}
               </button>
             ))}
-            <button
-              type="button" onClick={handleNovoImovel}
-              className="flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold"
-              style={{ background: '#fff', color: C.forest, border: `1px dashed ${C.forest}` }}
-            >
-              <Plus size={14} /> Novo imóvel
-            </button>
           </div>
+
+          {/* Zona de arrastar-e-soltar */}
+          <label
+            onDragEnter={handleDragEnter}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+            className="flex flex-col items-center justify-center gap-2 rounded-xl px-4 py-6 text-center cursor-pointer transition-colors"
+            style={{
+              border: `2px dashed ${arrastandoArquivo ? C.forest : C.line}`,
+              background: arrastandoArquivo ? C.forestSoft : C.bg,
+            }}
+          >
+            <UploadCloud size={22} color={arrastandoArquivo ? C.forest : C.inkSoft} />
+            <p className="text-sm font-semibold" style={{ color: arrastandoArquivo ? C.forestDark : C.inkSoft }}>
+              {arrastandoArquivo ? 'Solte os arquivos aqui' : 'Arraste declarações de ITR (PDF) aqui'}
+            </p>
+            <p className="text-xs" style={{ color: C.inkSoft }}>ou clique para selecionar — pode escolher vários arquivos de uma vez</p>
+            <input ref={fileInputRef} type="file" accept="application/pdf" multiple className="hidden" onChange={handleArquivosSelecionados} />
+          </label>
+
           {importando && (
             <div className="mt-3 flex items-center gap-2 text-xs" style={{ color: C.inkSoft }}>
               <Loader2 size={14} className="animate-spin" /> Lendo declarações…
