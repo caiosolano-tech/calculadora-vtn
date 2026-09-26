@@ -88,7 +88,7 @@ function getAliquota(areaTotal) {
 // =====================================================================
 // MOTOR DE CÁLCULO — função pura
 // =====================================================================
-function calcularVTN({ modo, areaTotal, aptidao, areas, vtnRow, vtnHaAnterior, vtnManual, areaNaoTributavelManual }) {
+function calcularVTN({ modo, areaTotal, aptidao, areas, vtnRow, vtnHaAnterior, vtnManual, areaNaoTributavelManual, vtnTotalAnteriorDeclarado }) {
   const areaTotalNum = Number(areaTotal) || 0;
   const inconsistencias = [];
 
@@ -132,11 +132,29 @@ function calcularVTN({ modo, areaTotal, aptidao, areas, vtnRow, vtnHaAnterior, v
   const saldo = round1(areaTotalNum - somaAreas);
 
   const temIndisponivel = itens.some((i) => i.indisponivel);
-  const vtnTotal = itens.reduce((s, i) => s + i.vtnParcial, 0);
-  const vtnPorHa = areaTotalNum > 0 ? vtnTotal / areaTotalNum : 0;
+  const vtnTotalPauta = itens.reduce((s, i) => s + i.vtnParcial, 0);
+  const vtnPorHaPauta = areaTotalNum > 0 ? vtnTotalPauta / areaTotalNum : 0;
 
   const anteriorNum = Number(vtnHaAnterior);
-  const diferencaPct = anteriorNum > 0 ? (vtnPorHa / anteriorNum) * 100 - 100 : null;
+  const diferencaPct = anteriorNum > 0 && vtnPorHaPauta > 0 ? (vtnPorHaPauta / anteriorNum) * 100 - 100 : null;
+
+  // -------------------------------------------------------------------
+  // REGRA DO VTN DO EXERCÍCIO ANTERIOR
+  // VTN/ha anterior = Valor da Terra Nua declarado ÷ Área Total do imóvel
+  // (ambos da declaração de ITR do ano passado). Se esse valor for MENOR
+  // que o VTN/ha calculado com a pauta deste exercício, mantém-se o VTN
+  // da declaração anterior no cálculo e no relatório.
+  // -------------------------------------------------------------------
+  const vtnAnteriorMantido = anteriorNum > 0 && vtnPorHaPauta > 0 && !temIndisponivel
+    && areaTotalNum > 0 && anteriorNum < vtnPorHaPauta;
+  let vtnTotal = vtnTotalPauta;
+  let vtnPorHa = vtnPorHaPauta;
+  if (vtnAnteriorMantido) {
+    vtnPorHa = anteriorNum;
+    // Quando o VTN/ha anterior veio da própria declaração importada (sem
+    // edição), usa o VTN total declarado para não acumular arredondamento.
+    vtnTotal = vtnTotalAnteriorDeclarado > 0 ? vtnTotalAnteriorDeclarado : anteriorNum * areaTotalNum;
+  }
 
   const areaAmbiental = itens.find((i) => i.key === 'ambiental').area;
   const areaTributavel = round1(areaTotalNum - areaAmbiental);
@@ -155,9 +173,21 @@ function calcularVTN({ modo, areaTotal, aptidao, areas, vtnRow, vtnHaAnterior, v
 
   return {
     itens, somaAreas, saldo, vtnTotal, vtnPorHa, diferencaPct,
+    vtnTotalPauta, vtnPorHaPauta, vtnAnteriorMantido, vtnHaAnterior: anteriorNum > 0 ? anteriorNum : null,
     areaAmbiental, areaTributavel, coeficiente, faixaAliquota, imposto, impostoBruto,
     inconsistencias, areaTotalNum,
   };
+}
+
+// Retorna o VTN total declarado no ano anterior apenas se o campo "VTN/ha do
+// exercício anterior" ainda contém exatamente o valor calculado a partir da
+// declaração importada (ou seja, o usuário não o editou nem mudou a área).
+function vtnTotalAnteriorExato(im) {
+  const imp = im.importado;
+  if (!imp || !(imp.vtnTotalAnteriorDeclarado > 0)) return null;
+  if (String(im.vtnHaAnterior) !== String(imp.vtnHaAnteriorCalculado)) return null;
+  if (Number(im.areaTotal) !== Number(imp.areaTotalDeclarada)) return null;
+  return imp.vtnTotalAnteriorDeclarado;
 }
 
 function round1(n) { return Math.round(n * 10) / 10; }
@@ -269,6 +299,7 @@ export default function CalculadoraVTN() {
     modo: imovel.modo, areaTotal: imovel.areaTotal, aptidao: imovel.aptidao, areas: imovel.areas,
     vtnRow, vtnHaAnterior: imovel.vtnHaAnterior, vtnManual: imovel.vtnManual,
     areaNaoTributavelManual: imovel.areaNaoTributavelManual,
+    vtnTotalAnteriorDeclarado: vtnTotalAnteriorExato(imovel),
   }), [imovel, vtnRow]);
 
   const bloqueado = resultado.inconsistencias.some((m) => m.startsWith('Erro'));
@@ -356,8 +387,14 @@ export default function CalculadoraVTN() {
         const municipioEncontrado = VTN_DATA_2026.find(
           (row) => row[0] === normalizaTexto(parsed.uf) && row[1] === normalizaTexto(parsed.municipio)
         );
+        // VTN/ha do exercício anterior = Valor da Terra Nua ÷ Área Total (da declaração)
+        const vtnDeclarado = parsed.declarado?.valorTerraNua;
+        const vtnHaAnteriorCalc = (vtnDeclarado > 0 && parsed.areaTotalImovel > 0)
+          ? (Math.round((vtnDeclarado / parsed.areaTotalImovel) * 100) / 100).toFixed(2)
+          : '';
         const novoImovel = {
           ...criarImovelVazio(),
+          vtnHaAnterior: vtnHaAnteriorCalc,
           nomeImovel: parsed.nomeImovel || '',
           cib: parsed.cib || '',
           uf: municipioEncontrado ? municipioEncontrado[0] : '',
@@ -380,6 +417,9 @@ export default function CalculadoraVTN() {
             pastagemTotalDeclarada: categorias.pastagemTotalDeclarada,
             declarado: parsed.declarado,
             municipioNaoEncontrado: !municipioEncontrado,
+            vtnHaAnteriorCalculado: vtnHaAnteriorCalc,
+            vtnTotalAnteriorDeclarado: vtnDeclarado > 0 ? vtnDeclarado : null,
+            areaTotalDeclarada: parsed.areaTotalImovel,
           },
         };
         if (existenteIdx > -1) {
@@ -409,6 +449,11 @@ export default function CalculadoraVTN() {
       `Calculadora de VTN — ${imovel.municipio || '(município)'}/${imovel.uf || '--'} — Exercício 2026`,
       `Área total: ${formatHA(resultado.areaTotalNum)}`,
       ...linhas,
+      ...(resultado.vtnAnteriorMantido ? [
+        `VTN pela pauta 2026: ${formatBRL(resultado.vtnPorHaPauta)}/ha`,
+        `VTN do exercício anterior (VTN declarado ÷ área total): ${formatBRL(resultado.vtnHaAnterior)}/ha`,
+        'VTN do exercício anterior MANTIDO: não foi alterado por ser menor que o VTN calculado com a pauta 2026.',
+      ] : []),
       `VTN Total: ${formatBRL(resultado.vtnTotal)}`,
       `VTN Ponderado: ${formatBRL(resultado.vtnPorHa)}/ha`,
       `Área tributável: ${formatHA(resultado.areaTributavel)} · Coeficiente: ${resultado.coeficiente}`,
@@ -446,6 +491,7 @@ export default function CalculadoraVTN() {
         modo: im.modo, areaTotal: im.areaTotal, aptidao: im.aptidao, areas: im.areas,
         vtnRow: linha, vtnHaAnterior: im.vtnHaAnterior, vtnManual: im.vtnManual,
         areaNaoTributavelManual: im.areaNaoTributavelManual,
+        vtnTotalAnteriorDeclarado: vtnTotalAnteriorExato(im),
       });
       const temErro = res.inconsistencias.some((m) => m.startsWith('Erro'));
       return { im, vtnRow: linha, resultado: res, temErro };
@@ -498,38 +544,12 @@ export default function CalculadoraVTN() {
       }
     }
 
-    // --- Tabela de valores de pauta (municípios distintos envolvidos) ---
-    const municipiosDistintos = [];
-    const vistos = new Set();
-    for (const { im, vtnRow: vr } of linhasRelatorio) {
-      if (im.uf && im.municipio && !vistos.has(im.uf + '|' + im.municipio)) {
-        vistos.add(im.uf + '|' + im.municipio);
-        municipiosDistintos.push({ uf: im.uf, municipio: im.municipio, vtnRow: vr });
-      }
-    }
-
-    if (municipiosDistintos.length > 0) {
-      garantirEspaco(20);
-      y = sectionHeader('Valores de pauta — Receita Federal, Exercício 2026', y);
-      autoTable(doc, {
-        startY: y,
-        theme: 'grid',
-        margin: { left: margem, right: margem },
-        headStyles: { fillColor: FOREST, fontSize: 7.5, font: 'Poppins', fontStyle: 'bold' },
-        styles: { fontSize: 7.5, cellPadding: 1.6, font: 'Poppins' },
-        head: [['Município/UF', ...CAMPOS_PAUTA.map((idx) => NOME_CAMPO_VTN[idx])]],
-        body: municipiosDistintos.map((m) => [
-          `${m.municipio}/${m.uf}`,
-          ...CAMPOS_PAUTA.map((idx) => (m.vtnRow && m.vtnRow[idx] != null ? formatBRL(m.vtnRow[idx]) : 'indisponível')),
-        ]),
-      });
-      y = doc.lastAutoTable.finalY + 8;
-    }
-
     // --- Um quadro verde de resumo por imóvel ---
     const boxH = 36;
-    for (const { im, resultado: res, temErro } of linhasRelatorio) {
-      garantirEspaco(boxH + 4);
+    const desenharImovel = ({ im, resultado: res, temErro }) => {
+      // reserva espaço para o quadro e, se houver, o aviso de VTN mantido,
+      // evitando que o aviso fique separado do quadro em outra página
+      garantirEspaco(boxH + 4 + (!temErro && res.vtnAnteriorMantido ? 22 : 0));
 
       doc.setFillColor(...FOREST);
       doc.roundedRect(margem, y, pageW - margem * 2, boxH, 2, 2, 'F');
@@ -557,7 +577,7 @@ export default function CalculadoraVTN() {
       const colX = [100, 135, 165];
       doc.setFont('Poppins', 'normal');
       doc.setFontSize(7.5);
-      doc.text('VTN/ha', colX[0], y + 18);
+      doc.text(res.vtnAnteriorMantido && !temErro ? 'VTN/ha (mantido)' : 'VTN/ha', colX[0], y + 18);
       doc.text('Alíquota', colX[1], y + 18);
       doc.text('Área tributável', colX[2], y + 18);
       doc.setFont('Poppins', 'bold');
@@ -578,7 +598,80 @@ export default function CalculadoraVTN() {
       }
 
       y += boxH + 5;
+
+      // Indicativo: VTN do exercício anterior mantido
+      if (!temErro && res.vtnAnteriorMantido) {
+        const WHEAT_SOFT = [251, 241, 218];
+        const WHEAT = [216, 169, 58];
+        const WHEAT_INK = [122, 90, 24];
+        const larguraTexto = pageW - margem * 2 - 10;
+        doc.setFont('Poppins', 'normal');
+        doc.setFontSize(7.5);
+        const texto = `VTN do exercício anterior mantido: ${formatBRL(res.vtnHaAnterior)}/ha (Valor da Terra Nua declarado ÷ área total do imóvel). `
+          + `Não foi alterado porque é menor que o VTN calculado com a pauta 2026 (${formatBRL(res.vtnPorHaPauta)}/ha). `
+          + `O imposto acima já considera o VTN mantido.`;
+        const linhasNota = doc.splitTextToSize(texto, larguraTexto);
+        const notaH = 7 + linhasNota.length * 3.4;
+        // se a nota não couber na página, empurra (a caixa fica na página anterior)
+        if (y + notaH > 280) { doc.addPage(); y = 20; }
+        doc.setFillColor(...WHEAT_SOFT);
+        doc.setDrawColor(...WHEAT);
+        doc.setLineWidth(0.4);
+        doc.roundedRect(margem, y - 3, pageW - margem * 2, notaH, 1.5, 1.5, 'FD');
+        doc.setTextColor(...WHEAT_INK);
+        doc.setFont('Poppins', 'bold');
+        doc.text('VTN MANTIDO — EXERCÍCIO ANTERIOR', margem + 5, y + 1.5);
+        doc.setFont('Poppins', 'normal');
+        doc.text(linhasNota, margem + 5, y + 5.2);
+        y += notaH + 3;
+      }
+    };
+
+    // --- Agrupa os imóveis por município (na ordem em que aparecem na sessão).
+    // Cada grupo recebe, logo acima dos seus imóveis, o quadro de pauta do
+    // respectivo município — funcionando como separador entre municípios.
+    const grupos = [];
+    const indiceGrupo = new Map();
+    for (const linha of linhasRelatorio) {
+      const temMun = !!(linha.im.uf && linha.im.municipio);
+      const chave = temMun ? `${linha.im.uf}|${linha.im.municipio}` : '__sem_municipio__';
+      if (!indiceGrupo.has(chave)) {
+        indiceGrupo.set(chave, grupos.length);
+        grupos.push({ uf: linha.im.uf, municipio: linha.im.municipio, temMun, vtnRow: linha.vtnRow, linhas: [] });
+      }
+      grupos[indiceGrupo.get(chave)].linhas.push(linha);
     }
+    // imóveis sem município ficam por último
+    grupos.sort((a, b) => Number(!a.temMun) - Number(!b.temMun));
+
+    grupos.forEach((g, gi) => {
+      if (gi > 0) y += 4; // respiro extra entre municípios
+      const qtd = g.linhas.length === 1 ? '1 imóvel' : `${g.linhas.length} imóveis`;
+      // cabeçalho + tabela de pauta + ao menos o primeiro quadro na mesma página
+      garantirEspaco(34 + boxH + 4);
+      if (g.temMun) {
+        y = sectionHeader(`${g.municipio}/${g.uf} — ${qtd}`, y);
+        autoTable(doc, {
+          startY: y,
+          theme: 'grid',
+          margin: { left: margem, right: margem },
+          headStyles: { fillColor: FOREST, fontSize: 7.5, font: 'Poppins', fontStyle: 'bold' },
+          styles: { fontSize: 7.5, cellPadding: 1.6, font: 'Poppins' },
+          head: [CAMPOS_PAUTA.map((idx) => NOME_CAMPO_VTN[idx])],
+          body: [CAMPOS_PAUTA.map((idx) => (g.vtnRow && g.vtnRow[idx] != null ? formatBRL(g.vtnRow[idx]) : 'indisponível'))],
+        });
+        y = doc.lastAutoTable.finalY + 2;
+        doc.setFont('Poppins', 'normal');
+        doc.setFontSize(7);
+        doc.setTextColor(...INK_SOFT);
+        doc.text('Valores de pauta (R$/ha) — Receita Federal, Exercício 2026', margem, y + 2.5);
+        y += 8;
+      } else {
+        y = sectionHeader(`Município não informado — ${qtd}`, y);
+        y += 5;
+      }
+      for (const linha of g.linhas) desenharImovel(linha);
+    });
 
     // --- Total do imposto de todos os imóveis (só quando há mais de 1) ---
     if (linhasRelatorio.length > 1) {
@@ -757,6 +850,11 @@ export default function CalculadoraVTN() {
                           <p className="text-xs mt-0.5" style={{ color: C.inkSoft }}>
                             {r.parsed.municipio}/{r.parsed.uf} · Área total: {formatHA(r.categorias.areaTotalDeclarada)} · Declaração {r.parsed.exercicio || '—'}
                           </p>
+                          {r.parsed.declarado?.valorTerraNua > 0 && r.parsed.areaTotalImovel > 0 && (
+                            <p className="text-xs mt-0.5" style={{ color: C.inkSoft }}>
+                              VTN da declaração: {formatBRL(r.parsed.declarado.valorTerraNua)} ÷ {formatHA(r.parsed.areaTotalImovel)} = <strong>{formatBRL(r.parsed.declarado.valorTerraNua / r.parsed.areaTotalImovel)}/ha</strong> (VTN do exercício anterior)
+                            </p>
+                          )}
                           <div className="flex flex-wrap gap-x-4 gap-y-0.5 mt-1.5 text-xs" style={{ color: C.inkSoft }}>
                             <span>Lavoura: {formatHA(r.categorias.lavoura)}</span>
                             <span>Pastagem Nativa: {formatHA(r.categorias.pastagemNativa)}</span>
@@ -907,7 +1005,7 @@ export default function CalculadoraVTN() {
                 />
               </div>
               <div>
-                <label className="block text-xs font-medium mb-1" style={{ color: C.inkSoft }}>VTN/ha do exercício anterior <span className="font-normal">(opcional)</span></label>
+                <label className="block text-xs font-medium mb-1" style={{ color: C.inkSoft }}>VTN/ha do exercício anterior <span className="font-normal">(VTN declarado ÷ área total)</span></label>
                 <input
                   type="number" min="0" step="0.01" inputMode="decimal"
                   className="w-full rounded-lg px-3 py-2 text-sm outline-none vtn-mono"
@@ -916,6 +1014,9 @@ export default function CalculadoraVTN() {
                   value={imovel.vtnHaAnterior}
                   onChange={(e) => updateActiveImovel({ vtnHaAnterior: e.target.value })}
                 />
+                <p className="text-[11px] mt-1 leading-tight" style={{ color: C.inkSoft }}>
+                  Preenchido automaticamente ao importar a declaração. Se for menor que o VTN calculado com a pauta 2026, ele é mantido.
+                </p>
               </div>
             </div>
 
@@ -1095,11 +1196,20 @@ export default function CalculadoraVTN() {
                 <div><p className="text-xs" style={{ color: C.inkSoft }}>VTN Total</p><p className="text-xl font-bold vtn-mono" style={{ color: C.forestDark }}>{formatBRL(resultado.vtnTotal)}</p></div>
               </div>
 
+              {resultado.vtnAnteriorMantido && (
+                <div className="mt-4 flex items-start gap-2 text-xs rounded-lg px-3 py-2" style={{ background: C.wheatSoft, color: '#7A5A18', border: `1px solid ${C.wheat}` }}>
+                  <Info size={15} className="flex-shrink-0 mt-0.5" />
+                  <span>
+                    <strong>VTN do exercício anterior mantido.</strong> O VTN/ha da declaração anterior ({formatBRL(resultado.vtnHaAnterior)}/ha) é menor que o calculado com a pauta 2026 ({formatBRL(resultado.vtnPorHaPauta)}/ha), por isso não foi alterado.
+                  </span>
+                </div>
+              )}
+
               {resultado.diferencaPct != null && (
                 <div className="mt-4 flex items-center gap-2 text-sm rounded-lg px-3 py-2" style={{ background: C.forestSoft }}>
                   {resultado.diferencaPct >= 0 ? <TrendingUp size={16} color={C.forest} /> : <TrendingDown size={16} color={C.clay} />}
                   <span style={{ color: C.inkSoft }}>
-                    {resultado.diferencaPct >= 0 ? 'Alta' : 'Queda'} de <strong className="vtn-mono">{formatPct1(Math.abs(resultado.diferencaPct))}</strong> vs. exercício anterior
+                    Pauta 2026: {resultado.diferencaPct >= 0 ? 'alta' : 'queda'} de <strong className="vtn-mono">{formatPct1(Math.abs(resultado.diferencaPct))}</strong> vs. exercício anterior
                   </span>
                 </div>
               )}
@@ -1181,8 +1291,20 @@ export default function CalculadoraVTN() {
                     </div>
                   )}
                   <div className="border-t pt-2" style={{ borderColor: C.forest }}>
-                    <p className="font-sans" style={{ color: C.ink }}>VTN Total = {formatBRL(resultado.vtnTotal)}</p>
-                    <p className="font-sans" style={{ color: C.ink }}>VTN Ponderado = VTN Total ÷ Área Total = {formatBRL(resultado.vtnPorHa)}/ha</p>
+                    {resultado.vtnAnteriorMantido ? (
+                      <>
+                        <p className="font-sans" style={{ color: C.ink }}>VTN pela pauta 2026 = {formatBRL(resultado.vtnTotalPauta)} ({formatBRL(resultado.vtnPorHaPauta)}/ha)</p>
+                        <p className="font-sans" style={{ color: C.ink }}>VTN do exercício anterior = VTN declarado ÷ Área Total = {formatBRL(resultado.vtnHaAnterior)}/ha</p>
+                        <p className="font-sans font-semibold" style={{ color: '#7A5A18' }}>VTN anterior &lt; VTN pauta 2026 → mantido o VTN da declaração anterior</p>
+                        <p className="font-sans mt-2" style={{ color: C.ink }}>VTN Total considerado = {formatBRL(resultado.vtnTotal)}</p>
+                        <p className="font-sans" style={{ color: C.ink }}>VTN/ha considerado = {formatBRL(resultado.vtnPorHa)}/ha</p>
+                      </>
+                    ) : (
+                      <>
+                        <p className="font-sans" style={{ color: C.ink }}>VTN Total = {formatBRL(resultado.vtnTotal)}</p>
+                        <p className="font-sans" style={{ color: C.ink }}>VTN Ponderado = VTN Total ÷ Área Total = {formatBRL(resultado.vtnPorHa)}/ha</p>
+                      </>
+                    )}
                     <p className="font-sans mt-2" style={{ color: C.ink }}>Área Tributável = Área Total − Área {imovel.modo === 'automatico' ? 'Ambiental' : 'Não Tributável'} = {formatHA(resultado.areaTributavel)}</p>
                     <p className="font-sans" style={{ color: C.ink }}>Coeficiente = TRUNC(Área Tributável ÷ Área Total, 4) = {resultado.coeficiente}</p>
                     <p className="font-sans" style={{ color: C.ink }}>VTN Tributável = VTN Total × Coeficiente = {formatBRL(resultado.vtnTotal * resultado.coeficiente)}</p>
