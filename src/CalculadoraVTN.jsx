@@ -141,12 +141,12 @@ function calcularVTN({ modo, areaTotal, aptidao, areas, vtnRow, vtnHaAnterior, v
   // -------------------------------------------------------------------
   // REGRA DO VTN DO EXERCÍCIO ANTERIOR
   // VTN/ha anterior = Valor da Terra Nua declarado ÷ Área Total do imóvel
-  // (ambos da declaração de ITR do ano passado). Se esse valor for MENOR
+  // (ambos da declaração de ITR do ano passado). Se esse valor for MAIOR
   // que o VTN/ha calculado com a pauta deste exercício, mantém-se o VTN
   // da declaração anterior no cálculo e no relatório.
   // -------------------------------------------------------------------
   const vtnAnteriorMantido = anteriorNum > 0 && vtnPorHaPauta > 0 && !temIndisponivel
-    && areaTotalNum > 0 && anteriorNum < vtnPorHaPauta;
+    && areaTotalNum > 0 && anteriorNum > vtnPorHaPauta;
   let vtnTotal = vtnTotalPauta;
   let vtnPorHa = vtnPorHaPauta;
   if (vtnAnteriorMantido) {
@@ -452,7 +452,7 @@ export default function CalculadoraVTN() {
       ...(resultado.vtnAnteriorMantido ? [
         `VTN pela pauta 2026: ${formatBRL(resultado.vtnPorHaPauta)}/ha`,
         `VTN do exercício anterior (VTN declarado ÷ área total): ${formatBRL(resultado.vtnHaAnterior)}/ha`,
-        'VTN do exercício anterior MANTIDO: não foi alterado por ser menor que o VTN calculado com a pauta 2026.',
+        'VTN do exercício anterior MANTIDO: não foi alterado por ser maior que o VTN calculado com a pauta 2026.',
       ] : []),
       `VTN Total: ${formatBRL(resultado.vtnTotal)}`,
       `VTN Ponderado: ${formatBRL(resultado.vtnPorHa)}/ha`,
@@ -608,7 +608,7 @@ export default function CalculadoraVTN() {
         doc.setFont('Poppins', 'normal');
         doc.setFontSize(7.5);
         const texto = `VTN do exercício anterior mantido: ${formatBRL(res.vtnHaAnterior)}/ha (Valor da Terra Nua declarado ÷ área total do imóvel). `
-          + `Não foi alterado porque é menor que o VTN calculado com a pauta 2026 (${formatBRL(res.vtnPorHaPauta)}/ha). `
+          + `Não foi alterado porque é maior que o VTN calculado com a pauta 2026 (${formatBRL(res.vtnPorHaPauta)}/ha). `
           + `O imposto acima já considera o VTN mantido.`;
         const linhasNota = doc.splitTextToSize(texto, larguraTexto);
         const notaH = 7 + linhasNota.length * 3.4;
@@ -1015,7 +1015,7 @@ export default function CalculadoraVTN() {
                   onChange={(e) => updateActiveImovel({ vtnHaAnterior: e.target.value })}
                 />
                 <p className="text-[11px] mt-1 leading-tight" style={{ color: C.inkSoft }}>
-                  Preenchido automaticamente ao importar a declaração. Se for menor que o VTN calculado com a pauta 2026, ele é mantido.
+                  Preenchido automaticamente ao importar a declaração. Vale sempre o maior: se ele for maior que o VTN calculado com a pauta 2026, é mantido.
                 </p>
               </div>
             </div>
@@ -1200,7 +1200,7 @@ export default function CalculadoraVTN() {
                 <div className="mt-4 flex items-start gap-2 text-xs rounded-lg px-3 py-2" style={{ background: C.wheatSoft, color: '#7A5A18', border: `1px solid ${C.wheat}` }}>
                   <Info size={15} className="flex-shrink-0 mt-0.5" />
                   <span>
-                    <strong>VTN do exercício anterior mantido.</strong> O VTN/ha da declaração anterior ({formatBRL(resultado.vtnHaAnterior)}/ha) é menor que o calculado com a pauta 2026 ({formatBRL(resultado.vtnPorHaPauta)}/ha), por isso não foi alterado.
+                    <strong>VTN do exercício anterior mantido.</strong> O VTN/ha da declaração anterior ({formatBRL(resultado.vtnHaAnterior)}/ha) é maior que o calculado com a pauta 2026 ({formatBRL(resultado.vtnPorHaPauta)}/ha), por isso não foi alterado.
                   </span>
                 </div>
               )}
@@ -1295,7 +1295,7 @@ export default function CalculadoraVTN() {
                       <>
                         <p className="font-sans" style={{ color: C.ink }}>VTN pela pauta 2026 = {formatBRL(resultado.vtnTotalPauta)} ({formatBRL(resultado.vtnPorHaPauta)}/ha)</p>
                         <p className="font-sans" style={{ color: C.ink }}>VTN do exercício anterior = VTN declarado ÷ Área Total = {formatBRL(resultado.vtnHaAnterior)}/ha</p>
-                        <p className="font-sans font-semibold" style={{ color: '#7A5A18' }}>VTN anterior &lt; VTN pauta 2026 → mantido o VTN da declaração anterior</p>
+                        <p className="font-sans font-semibold" style={{ color: '#7A5A18' }}>VTN anterior &gt; VTN pauta 2026 → mantido o VTN da declaração anterior</p>
                         <p className="font-sans mt-2" style={{ color: C.ink }}>VTN Total considerado = {formatBRL(resultado.vtnTotal)}</p>
                         <p className="font-sans" style={{ color: C.ink }}>VTN/ha considerado = {formatBRL(resultado.vtnPorHa)}/ha</p>
                       </>
